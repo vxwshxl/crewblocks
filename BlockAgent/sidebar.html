@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BlockAgent Sidebar</title>
+  <link rel="stylesheet" href="sidebar.css" />
+
+  <!-- Markdown Parser & Sanitizer -->
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/purify.min.js"></script>
+
+  <!-- Code Highlighting -->
+  <link rel="stylesheet" href="vendor/github-dark.min.css" />
+  <script src="vendor/highlight.min.js"></script>
+</head>
+
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="header-content">
+        <div class="header-left">
+          <div class="logo">
+            <!-- BlockAgent Logo/Icon placeholder -->
+            <img src="logoCS.png" alt="BlockAgent Logo" width="24" height="24" style="border-radius: 4px" />
+            <span>BlockAgent</span>
+          </div>
+        </div>
+        <div class="header-actions">
+          <div class="select-wrapper agent-wrapper">
+            <select id="model-select" class="action-btn" title="Agent">
+              <option value="">Select agent...</option>
+            </select>
+          </div>
+          <button id="sync-btn" class="action-btn" title="Sync from Dashboard">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="tabs-nav">
+      <button class="tab-btn active" data-target="chat-view">Chat</button>
+      <button class="tab-btn" data-target="activity-view">Activity</button>
+      <button class="tab-btn" data-target="memory-view">Memory</button>
+
+      <div class="select-wrapper translate-wrapper">
+        <select id="translate-lang" class="action-btn" title="Translate Page">
+          <option value="">Translate</option>
+          <option value="as">Assamese</option>
+          <option value="bn">Bengali</option>
+          <option value="brx">Bodo</option>
+          <option value="hi">Hindi</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="main-content">
+      <div id="chat-view" class="tab-pane active">
+        <div id="chat-container" class="chat-container">
+          <div class="welcome-screen">
+            <div class="welcome-icon">
+              <img src="logoCS.png" alt="BlockAgent Logo" width="48" height="48" style="border-radius: 8px" />
+            </div>
+            <h2>Welcome to<br />BlockAgent Agentic Engine</h2>
+            <p>Designed for Pure Intelligence.</p>
+            <p class="subtitle">
+              I can read the page, answer questions, translate, and perform
+              browser actions.
+            </p>
+          </div>
+          <!-- Messages will be injected here -->
+        </div>
+      </div>
+
+      <div id="activity-view" class="tab-pane">
+        <div class="log-header">Real-time Activity Log</div>
+        <div id="activity-log" class="log-container">
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+              <path
+                d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+            </svg>
+            <p>Activity will appear here when you chat</p>
+          </div>
+        </div>
+      </div>
+
+      <div id="memory-view" class="tab-pane">
+        <div class="log-header">Current Context & Tasks</div>
+        <div id="memory-log" class="log-container">
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2a10 10 0 100 20 10 10 0 000-20zM12 6v6l4 2" />
+            </svg>
+            <p>No memory recorded yet</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <!-- Container for image previews -->
+      <div id="image-previews-container" class="image-previews"></div>
+      
+      <div class="input-wrapper">
+        <textarea id="chat-input" placeholder="Ask anything..." rows="1" autofocus></textarea>
+        <!-- Added hidden file input -->
+        <input type="file" id="file-upload-input" multiple accept="image/jpeg, image/png, image/webp" style="display: none;" />
+        
+        <select id="speech-lang" class="speech-lang-select" title="Speech Language">
+          <option value="en-US">EN</option>
+          <option value="as-IN">AS</option>
+          <option value="bn-IN">BN</option>
+          <option value="hi-IN">HI</option>
+        </select>
+        <button id="mic-btn" class="send-btn mic-btn" title="Speech to Text">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="22"></line>
+          </svg>
+        </button>
+        <div id="mic-equalizer" class="equalizer hidden">
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+        </div>
+        <button id="upload-btn" class="send-btn upload-btn" style="display: none;" title="Upload Image">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+        </button>
+        <button id="send-btn" class="send-btn">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M5 12h14M12 5l7 7-7 7" />
+          </svg>
+        </button>
+      </div>
+      <div class="footer-meta">
+        <span class="badge">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          BlockAgent Agentic Engine
+        </span>
+        <button id="clear-btn" class="footer-action-btn" title="Clear Chat">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+  <script src="sidebar.js"></script>
+</body>
+
+</html>
