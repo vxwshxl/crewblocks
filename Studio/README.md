@@ -1,52 +1,62 @@
-# CrewBlocks
+# CrewBlocks Studio
 
-CrewBlocks is an interactive, visual drag-and-drop AI agent workflow builder. It empowers users to create, configure, and orchestrate autonomous AI agents in a dynamic workspace.
+The Next.js half of CrewBlocks: the landing page, the dashboard, the block editor, and the API the
+[`BlockAgent`](../BlockAgent/) extension talks to.
 
-## Features
+For the product overview, the block reference, and the deployment guide, see the
+[root README](../README.md).
 
-- **Interactive Canvas Builder**: Seamlessly drag and drop nodes (Agents, Start points, Conditions, Custom Functions, Sticky Notes) using a powerful canvas engine.
-- **Agent Orchestration**: Connect multiple AI nodes together visually to create robust and complex collaborative AI workflows.
-- **Detailed Node Configurations**: Easy-to-use configuration side-panels for adjusting your agent's specific instructions, chosen LLM Models, tools, and custom execution functions.
-- **Interactive Spotlight Tutorial**: A built-in, animated tutorial that intelligently tracks UI elements around the DOM and guides new users step-by-step through creating their first workflow.
-- **Persistent Edge State**: Workflows, agents, node positions, and API keys are continuously auto-saved purely on the client so you don't lose any progress.
+## The block editor
 
-## Tech Stack
+An agent is an ordered stack of blocks. Position in the stack is the wiring — there is no canvas
+and there are no connections. [`src/lib/blocks.ts`](src/lib/blocks.ts) is the single source of
+truth: the editor renders from `BLOCK_SPECS`, the API compiles through `compileStack`, and both
+check `validateStack`.
 
-The application relies on a modern, robust, and highly scalable stack:
+| Path | What lives there |
+|---|---|
+| `src/lib/blocks.ts` | Block model, tool library, validator, prompt compiler, legacy reader |
+| `src/components/blocks/` | `BlockStackEditor` · `BlockCard` · `BlockBody` · `AddBlockMenu` · `StackComposer` |
+| `src/app/agent/[id]/` | The editor route — load, autosave, realtime presence |
+| `src/app/api/extension/` | The bridge the side panel calls |
 
-- **Framework**: [Next.js](https://nextjs.org/) (App Router)
-- **UI Library**: [React](https://react.dev/)
-- **Language**: [TypeScript](https://www.typescriptlang.org/)
-- **Styling**: [Tailwind CSS](https://tailwindcss.com/)
-- **Node Canvas Engine**: [React Flow](https://reactflow.dev/) (`@xyflow/react`)
-- **State Management**: [Zustand](https://zustand-demo.pmnd.rs/) (with Auto-Persist)
-- **Icons**: [Lucide React](https://lucide.dev/)
-- **Components**: [shadcn/ui](https://ui.shadcn.com/) inspired minimalist components architecture
+Adding a **tool** is a data entry in `TOOL_LIBRARY`, not a new component. Adding a **block kind**
+means an entry in `BLOCK_SPECS`, a case in `createBlock`, and a body in `BlockBody`.
 
-## Getting Started
+## Tech stack
 
-First, install the dependencies for the application:
+- **Framework**: [Next.js](https://nextjs.org/) 16 (App Router)
+- **UI**: [React](https://react.dev/) 19 · [TypeScript](https://www.typescriptlang.org/) strict
+- **Styling**: [Tailwind CSS](https://tailwindcss.com/) v4 with `--ds-*` design tokens
+- **Components**: [shadcn/ui](https://ui.shadcn.com/) primitives over [Base UI](https://base-ui.com/)
+- **Data**: [Supabase](https://supabase.com/) — Postgres, Auth, Realtime, RLS
+- **State**: [Zustand](https://zustand-demo.pmnd.rs/), persisted for the extension to read
+- **Icons**: [Lucide](https://lucide.dev/)
+
+## Getting started
 
 ```bash
-npm install
-# or
-yarn install
-# or
 pnpm install
-# or
-bun install
+cp .env.example .env.local   # fill in your Supabase project
+pnpm dev
 ```
 
-Then, run the local development server:
+Open [http://localhost:3000](http://localhost:3000). Sign up, add a Gemini key under
+**API Keys**, then create your first agent. A guided tour runs on first visit.
+
+## Scripts
+
+| Command | What it does |
+|---|---|
+| `pnpm dev` | Development server |
+| `pnpm build` | Production build |
+| `pnpm start` | Serve the production build |
+| `pnpm typecheck` | `tsc --noEmit` — must be clean |
+| `pnpm lint` | ESLint across the app |
+
+`pnpm lint` reports problems inherited from this codebase's origin. New code must be clean on its
+own:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npx eslint src/components/blocks src/lib/blocks.ts src/app/agent
 ```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the complete dashboard. If it's your first time opening the app, the interactive tour guide will automatically walk you through your first steps!
