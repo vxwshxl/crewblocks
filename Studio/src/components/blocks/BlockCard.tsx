@@ -97,7 +97,12 @@ export default function BlockCard({
                 <button
                     type="button"
                     draggable
-                    onDragStart={onDragStart}
+                    onDragStart={(event) => {
+                        // Firefox refuses to start a drag without payload.
+                        event.dataTransfer.setData('text/plain', block.id);
+                        event.dataTransfer.effectAllowed = 'move';
+                        onDragStart();
+                    }}
                     onDragEnd={onDragEnd}
                     aria-label={`Reorder ${spec.label}. Or press Alt with the arrow keys.`}
                     className="mt-1 flex size-6 shrink-0 cursor-grab items-center justify-center rounded-sm text-muted-fg opacity-0 transition-opacity duration-[120ms] hover:text-foreground focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring active:cursor-grabbing group-hover/block:opacity-100 group-focus-within/block:opacity-100"
