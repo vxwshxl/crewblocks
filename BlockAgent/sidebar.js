@@ -490,14 +490,30 @@ function updateUploadButtonVisibility(modelId) {
 const welcomeScreenHTML = `
                 <div class="welcome-screen">
                     <div class="welcome-icon">
-                        <img src="logoCS.png" alt="BlockAgent Logo" width="48" height="48" style="border-radius: 8px;">
+                        <img src="logoCS.png" alt="BlockAgent Logo" width="40" height="40">
                     </div>
-                    <h2>Welcome to BlockAgent Assistant</h2>
-                    <p>Designed for Pure Intelligence.</p>
-                    <p class="subtitle">I can read the page, answer questions, translate, and perform browser actions.
-                    </p>
+                    <h2>Welcome to BlockAgent</h2>
+                    <p>Your crew, working the web.</p>
+                    <p class="subtitle">I can read the page, answer questions, translate, and perform browser actions for you.</p>
+                    <div class="welcome-suggestions">
+                        <button class="welcome-chip" type="button">Summarise this page</button>
+                        <button class="welcome-chip" type="button">Translate to Hindi</button>
+                        <button class="welcome-chip" type="button">Fill this form</button>
+                    </div>
                 </div>
 `;
+
+// Suggestion chips: drop their text into the input and focus it. Delegated so
+// it keeps working after the welcome screen is re-rendered on clear.
+document.addEventListener('click', (e) => {
+    const chip = e.target.closest('.welcome-chip');
+    if (!chip) return;
+    const input = document.getElementById('chat-input');
+    if (!input) return;
+    input.value = chip.textContent.trim();
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+});
 
 clearBtn.addEventListener('click', async () => {
     const modelSelect = document.getElementById('model-select');
@@ -1259,28 +1275,36 @@ function showOnboardingGuides() {
         }
     ];
 
+    const total = guides.length;
     guides.forEach((guide, index) => {
         setTimeout(() => {
             if (!guide.element) return;
 
             const guideEl = document.createElement('div');
             guideEl.className = `onboarding-guide ${guide.position}`;
-            guideEl.innerText = guide.text;
+            const step = document.createElement('span');
+            step.className = 'onboarding-step';
+            step.textContent = `Step ${index + 1} / ${total}`;
+            const body = document.createElement('div');
+            body.textContent = guide.text;
+            guideEl.append(step, body);
             document.body.appendChild(guideEl);
 
             const rect = guide.element.getBoundingClientRect();
             let top, left;
 
+            // The arrow sits ~31px from the tooltip's left edge; offset so it
+            // points at the centre of the highlighted control.
             if (guide.position === 'bottom') {
-                top = rect.bottom + 12;
-                left = rect.left + (rect.width / 2) - 90;
+                top = rect.bottom + 13;
+                left = rect.left + (rect.width / 2) - 31;
             } else if (guide.position === 'top') {
-                top = rect.top - 50;
-                left = rect.left + (rect.width / 2) - 90;
+                top = rect.top - 84;
+                left = rect.left + (rect.width / 2) - 31;
             }
 
             // Constrain to viewport
-            left = Math.max(10, Math.min(window.innerWidth - 190, left));
+            left = Math.max(10, Math.min(window.innerWidth - 220, left));
 
             guideEl.style.top = `${top}px`;
             guideEl.style.left = `${left}px`;

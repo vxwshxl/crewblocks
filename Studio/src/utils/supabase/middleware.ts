@@ -1,10 +1,16 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { DEV_AUTH_BYPASS } from './devAuth'
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
     request,
   })
+
+  // Local sign-in bypass: never touch Supabase, never redirect to /login.
+  if (DEV_AUTH_BYPASS) {
+    return supabaseResponse
+  }
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -33,7 +39,7 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser()
 
   const path = request.nextUrl.pathname
-  const isProtectedRoute = ['/dashboard'].some((route) => path.startsWith(route));
+  const isProtectedRoute = ['/dashboard', '/agent'].some((route) => path.startsWith(route));
   const isPublicRoute = ['/login', '/signup', '/'].includes(path)
 
   if (isProtectedRoute && !user) {

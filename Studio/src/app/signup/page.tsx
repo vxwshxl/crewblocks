@@ -36,6 +36,10 @@ export default function SignupPage() {
         throw new Error(error.message);
       }
 
+      // Fire-and-forget welcome email. The endpoint reads the recipient from
+      // the freshly-set session, so we don't pass the address ourselves.
+      fetch('/api/email/welcome', { method: 'POST' }).catch(() => {});
+
       // Supabase auto-logs in after signup if email conf isn't required. We can redirect.
       router.push('/dashboard');
       router.refresh();

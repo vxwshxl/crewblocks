@@ -1,10 +1,11 @@
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
+import { applyDevAuth } from './devAuth'
 
 export async function createClient() {
   const cookieStore = await cookies()
 
-  return createServerClient(
+  return applyDevAuth(createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
@@ -25,5 +26,5 @@ export async function createClient() {
         },
       },
     }
-  )
+  ))
 }

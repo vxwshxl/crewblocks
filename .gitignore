@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
 
+# pnpm — local store/cache only; pnpm-lock.yaml and pnpm-workspace.yaml stay tracked
+.pnpm-store/
+.pnpm/
+
 # Build output
 .next/
 out/

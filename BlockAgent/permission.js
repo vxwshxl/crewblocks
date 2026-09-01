@@ -5,7 +5,7 @@ document.addEventListener('DOMContentLoaded', () => {
         .then((stream) => {
             content.innerHTML = `
                 <h2>Permission Granted! 🎤</h2>
-                <p class="success">You can now use the microphone in the 1e sidebar.</p>
+                <p class="success">You can now use the microphone in the sidebar.</p>
                 <p>This tab will close automatically in a few seconds...</p>
             `;
             // Stop tracks immediately so we don't hold the mic

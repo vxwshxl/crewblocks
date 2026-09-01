@@ -43,9 +43,11 @@
     </header>
 
     <div class="tabs-nav">
-      <button class="tab-btn active" data-target="chat-view">Chat</button>
-      <button class="tab-btn" data-target="activity-view">Activity</button>
-      <button class="tab-btn" data-target="memory-view">Memory</button>
+      <div class="tab-group">
+        <button class="tab-btn active" data-target="chat-view">Chat</button>
+        <button class="tab-btn" data-target="activity-view">Activity</button>
+        <button class="tab-btn" data-target="memory-view">Memory</button>
+      </div>
 
       <div class="select-wrapper translate-wrapper">
         <select id="translate-lang" class="action-btn" title="Translate Page">
@@ -64,14 +66,19 @@
         <div id="chat-container" class="chat-container">
           <div class="welcome-screen">
             <div class="welcome-icon">
-              <img src="logoCS.png" alt="BlockAgent Logo" width="48" height="48" style="border-radius: 8px" />
+              <img src="logoCS.png" alt="BlockAgent Logo" width="40" height="40" />
             </div>
-            <h2>Welcome to<br />BlockAgent Agentic Engine</h2>
-            <p>Designed for Pure Intelligence.</p>
+            <h2>Welcome to BlockAgent</h2>
+            <p>Your crew, working the web.</p>
             <p class="subtitle">
               I can read the page, answer questions, translate, and perform
-              browser actions.
+              browser actions for you.
             </p>
+            <div class="welcome-suggestions">
+              <button class="welcome-chip" type="button">Summarise this page</button>
+              <button class="welcome-chip" type="button">Translate to Hindi</button>
+              <button class="welcome-chip" type="button">Fill this form</button>
+            </div>
           </div>
           <!-- Messages will be injected here -->
         </div>
