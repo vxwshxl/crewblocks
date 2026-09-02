@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "zip:extension": "powershell -NoProfile -Command \"if (Test-Path public/BlockAgent.zip) { Remove-Item public/BlockAgent.zip -Force }; Compress-Archive -Path ../BlockAgent -DestinationPath public/BlockAgent.zip -CompressionLevel Optimal\""
+    "zip:extension": "rm -f public/BlockAgent.zip && cd .. && zip -rq Studio/public/BlockAgent.zip BlockAgent -x '*.DS_Store' '*/.*'"
   },
   "dependencies": {
     "@base-ui/react": "^1.2.0",

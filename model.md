@@ -46,7 +46,7 @@ which is why anything that must not fail is enforced in code rather than request
 
 ### Switching tiers
 
-The side panel header carries a **Cloud / On this Mac** toggle. It overrides the stack's Model
+The side panel header carries a **Cloud / Local** toggle. It overrides the stack's Model
 block for that session and nothing else — the agent's configuration is untouched, only where it
 runs changes.
 
@@ -359,6 +359,63 @@ text summary. Full action history stays as text, which is nearly free. Twenty-fi
 
 ---
 
+## 4.1 Where the run starts
+
+A run used to begin wherever the user happened to be standing. Asked to *"mail
+jeumachahary07@gmail.com saying our prototype is ready"* while reading a GitHub repo, the agent
+worked the repo: it read GitHub's element table, found nothing to send mail with, asked the user
+for an email address that was already in the request, and burned turns until `NO_PROGRESS_LOOP`
+stopped it. Nothing in the action protocol ever said *the page in front of you may be the wrong
+page* — rule 9 only said not to re-navigate to a page you were already on, so the only guidance
+about navigation discouraged it.
+
+**The triage turn now routes as well as gates.** It already ran once per new message, before any
+page read, and it is the only place in the system that decides *"is this a job at all"*. Deciding
+*where* needs the same inputs, so it is the same turn: the message, plus the current URL and title.
+
+| Verdict | Meaning | What happens |
+|---|---|---|
+| `{"kind":"chat","text":…}` | conversation | answered in the panel, no run |
+| `{"kind":"task"}` | the job belongs to this page | loop runs in place |
+| `{"kind":"task","startUrl":…}` | the job needs a different site | opens a **new tab**, loop runs there |
+
+Deciding here rather than in the loop matters: by the time the loop runs, the model is looking at a
+table of buttons that all belong to the wrong site, and its job is to pick one of them. Triage sees
+no elements at all, so there is nothing to be tempted by.
+
+**Measured** on `qwen/qwen3-vl-8b-instruct`, temperature 0, eight cases against a GitHub repo,
+WhatsApp Web and Gmail:
+
+| | Result |
+|---|---|
+| Model verdict correct | 7 / 8 |
+| Correct after the same-host guard | **8 / 8** |
+
+The single miss was *"star this repo"* on GitHub, which came back with
+`startUrl: …/stargazers` — right site, pointless tab. The side panel drops any `startUrl` whose
+host matches the current page, so the run correctly stays in place. That guard also absorbs the
+common case of the model naming the site the user is already on.
+
+**Three things are enforced in code, not asked for in the prompt:**
+
+- **Scheme.** `safeStartUrl` in the route accepts only `http:`/`https:`. A model-supplied string
+  becomes a real navigation in the user's browser; `javascript:` must never reach
+  `chrome.tabs.create`, and a hallucinated fragment must fail as a rejected URL rather than as a
+  page load.
+- **Allowlist.** `openTaskTab` runs the same `hostAllowed` check the in-loop `NAVIGATE` runs.
+  Without it, triage would be a way around the user's own domain limits.
+- **Tab ownership.** The run pins itself to the tab it opened (`runTabId`, honoured inside
+  `getActiveTab`). The tab opens active so the work is visible, but if the user clicks back to what
+  they were reading, the agent keeps operating on its own tab instead of following them onto an
+  unrelated page and acting on it. The pin releases in `clearRun`; the tab stays open.
+
+**Also fixed, same failure:** protocol rule 9 now bounds `ASK`. Anything already stated in the
+request — a recipient, an address, a quantity, a name — is the model's to use. *"Please provide
+your email address to send the message"*, when the recipient was in the prompt, is the shape this
+rule exists to stop.
+
+---
+
 ## 5. Pausing for a human
 
 The agent has to be able to stop mid-task, ask for something only the person has — an OTP, a
@@ -644,7 +701,7 @@ the same API.
 2. Load `BlockAgent/` at `chrome://extensions` → Developer mode → **Load unpacked**. Reload it
    after any extension change; the side panel does not hot-reload.
 3. Sign in at `localhost:3000`, build an agent (§9), open the side panel, pick it from the dropdown.
-4. Toggle **Cloud / On this Mac** in the header and watch `ranOn` change.
+4. Toggle **Cloud / Local** in the header and watch `ranOn` change.
 
 Worth exercising deliberately, because each one is a guard that is invisible when it works:
 

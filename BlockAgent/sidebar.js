@@ -28,24 +28,39 @@ async function fetchModels() {
             BACKEND_URL = 'https://crewblocks.vercel.app/api/extension';
         }
 
-        // 1. Get models from Server (filtered by logged in user via session)
+        // 1. Ask the server. When it answers, it is the only authority on which
+        // agents exist — merging a cache into a good answer is how agents that
+        // were deleted, or that belonged to a different Supabase project, stayed
+        // in the list long enough to be picked and then fail as "not found".
         let serverModels = [];
+        let serverAnswered = false;
+        let signedOut = false;
         try {
             const res = await fetch(`${BACKEND_URL}/models`, { credentials: 'include' });
             if (res.ok) {
                 const data = await res.json();
                 serverModels = data.models || [];
-                // Update local storage to stay in sync
+                serverAnswered = true;
                 await chrome.storage.local.set({ synced_models: serverModels });
+            } else if (res.status === 401) {
+                // The cache is per-account data we can no longer verify. Keeping
+                // it would show agents this session has no right to and cannot use.
+                signedOut = true;
+                serverAnswered = true;
+                await chrome.storage.local.remove('synced_models');
             }
-        } catch (e) { /* silent */ }
+        } catch (e) {
+            // Genuinely unreachable — fall back to the cache below.
+        }
 
-        // 2. Get models from Local Sync
+        // 2. The cache is a fallback for being offline, not a second source.
         let syncedModels = [];
-        try {
-            const result = await chrome.storage.local.get(['synced_models']);
-            syncedModels = result.synced_models || [];
-        } catch (e) { /* silent */ }
+        if (!serverAnswered) {
+            try {
+                const result = await chrome.storage.local.get(['synced_models']);
+                syncedModels = result.synced_models || [];
+            } catch (e) { /* silent */ }
+        }
 
         // 3. Merge models
         const modelMap = new Map();
@@ -60,7 +75,10 @@ async function fetchModels() {
         modelsData = allModels;
 
         if (select) {
-            select.innerHTML = '<option value="">Select agent...</option>';
+            const placeholder = signedOut
+                ? 'Sign in to CrewBlocks'
+                : (allModels.length ? 'Select agent...' : 'No agents yet');
+            select.innerHTML = `<option value="">${placeholder}</option>`;
             if (allModels.length > 0) {
                 allModels.forEach(model => {
                     const opt = document.createElement('option');
@@ -749,25 +767,47 @@ async function sendMessage() {
     addMessage(text, 'user', 'normal', msgImageData);
     chatHistory.push({ role: "user", content: text, image_data: msgImageData });
 
-    // Not every message is a job for the browser. Ask first, so "hi" cannot
-    // start a run that clicks something.
-    if (await isConversation(text)) return;
+    // Two questions before any run starts: is this a job for the browser at all,
+    // and does it belong to the page the user is standing on? "hi" must not
+    // click anything, and "mail sam@example.com" must not be attempted against
+    // whatever repo they happened to have open.
+    runTabId = null; // a new task re-decides where it happens
+    const verdict = await triageMessage(text);
+    if (verdict.kind === 'chat') return;
+
+    if (verdict.startUrl && !(await openTaskTab(verdict.startUrl))) return;
 
     runAgentLoop();
 }
 
 /**
- * True when the message was conversation and has already been answered.
+ * Decides what to do with a new message, before any run starts.
+ *
+ * Returns { kind: 'chat' } when it was conversation and has already been
+ * answered here, or { kind: 'task', startUrl } where a startUrl means the job
+ * does not belong to the page in front of the user.
  *
  * Costs one short text-only turn. It only runs when a new task would otherwise
- * start — never mid-run, and never on a resume — so it does not slow the loop
- * itself. Any failure answers "no" and lets the run proceed, because refusing
- * to work is worse than an unnecessary run.
+ * start — never mid-run, never on a resume — so it does not slow the loop. Every
+ * failure path answers 'task' with no startUrl, because refusing to work is
+ * worse than an unnecessary run, and the user's own page is the safe default
+ * place to run it.
  */
-async function isConversation(text) {
+async function triageMessage(text) {
     const modelSelect = document.getElementById('model-select');
     const selectedModel = modelSelect ? modelSelect.value : '';
-    if (!selectedModel) return false;
+    if (!selectedModel) return { kind: 'task', startUrl: null };
+
+    // Where the user is standing is half of the routing decision.
+    let url = '';
+    let title = '';
+    try {
+        const tab = await getActiveTab();
+        url = (tab && tab.url) || '';
+        title = (tab && tab.title) || '';
+    } catch (e) {
+        console.warn('Could not read the current tab for triage:', e.message);
+    }
 
     try {
         const response = await fetch(`${BACKEND_URL}/chat`, {
@@ -778,22 +818,33 @@ async function isConversation(text) {
                 mode: 'triage',
                 model: selectedModel,
                 messages: [{ role: 'user', content: text }],
+                url,
+                title,
                 preferLocal
             })
         });
 
-        if (!response.ok) return false;
+        if (!response.ok) return { kind: 'task', startUrl: null };
 
         const data = await response.json();
-        if (data.kind !== 'chat') return false;
+        if (data.kind === 'chat') {
+            const reply = data.text || 'What would you like me to do on this page?';
+            addMessage(reply, 'ai');
+            chatHistory.push({ role: 'assistant', content: reply });
+            return { kind: 'chat' };
+        }
 
-        const reply = data.text || 'What would you like me to do on this page?';
-        addMessage(reply, 'ai');
-        chatHistory.push({ role: 'assistant', content: reply });
-        return true;
+        // Already on it: opening a second tab for the same page helps nobody.
+        let startUrl = data.startUrl || null;
+        if (startUrl && url) {
+            try {
+                if (new URL(startUrl).hostname === new URL(url).hostname) startUrl = null;
+            } catch (e) { /* an unparseable pair is not a match */ }
+        }
+        return { kind: 'task', startUrl };
     } catch (e) {
         console.warn('Triage failed, running the task anyway:', e.message);
-        return false;
+        return { kind: 'task', startUrl: null };
     }
 }
 
@@ -966,6 +1017,8 @@ async function saveRun() {
 
 async function clearRun() {
     activeRun = null;
+    // The tab itself stays open for the user; only the agent's claim on it ends.
+    runTabId = null;
     if (waitingTimer) {
         clearTimeout(waitingTimer);
         waitingTimer = null;
@@ -1885,9 +1938,84 @@ function scrollToBottom() {
 }
 
 // Extension APIs
+
+/**
+ * The tab a run opened for itself, or null when the run works in place.
+ *
+ * Every page operation goes through getActiveTab(), so pinning here is enough
+ * to cover all of them.
+ */
+let runTabId = null;
+
+/**
+ * The tab the agent is working in.
+ *
+ * A run that opened its own tab stays pinned to it, so the user is free to click
+ * back to whatever they were reading without the agent following them onto an
+ * unrelated page and acting on it. Falls back to the genuinely active tab when
+ * nothing is pinned, or when the pinned tab has been closed.
+ */
 async function getActiveTab() {
+    if (runTabId !== null) {
+        try {
+            return await chrome.tabs.get(runTabId);
+        } catch (e) {
+            runTabId = null; // closed mid-run
+        }
+    }
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     return tab;
+}
+
+/** A fresh tab reports 'loading' first, so polling is safe here where a
+ *  status listener could miss a load that completed before it attached. */
+async function waitForNewTabReady(tabId, timeoutMs = 12000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            const tab = await chrome.tabs.get(tabId);
+            if (tab.status === 'complete') return true;
+        } catch (e) {
+            return false; // the user closed it
+        }
+        await delay(250);
+    }
+    return true;
+}
+
+/**
+ * Opens the site a task starts on in a NEW tab and pins the run to it, leaving
+ * whatever the user was reading exactly where it was.
+ *
+ * Opened active so the work is visible while it happens; pinned so that clicking
+ * away does not hand the agent someone else's page.
+ */
+async function openTaskTab(url) {
+    // The allowlist is the user's control over where the agent may go. Opening a
+    // tab answers to it exactly as an in-loop NAVIGATE does, or triage becomes a
+    // way around it.
+    const limits = limitsForSelectedAgent();
+    if (!hostAllowed(url, limits.allowlist)) {
+        let host = url;
+        try { host = new URL(url).hostname; } catch (e) { /* show the raw string */ }
+        addMessage(`That starts on ${host}, which is not on this agent's allowlist (${limits.allowlist.join(', ')}). Add it on the Vision block, or open the site yourself and ask again.`, 'ai', 'error');
+        return false;
+    }
+
+    try {
+        const tab = await chrome.tabs.create({ url, active: true });
+        runTabId = tab.id;
+        let host = url;
+        try { host = new URL(url).hostname; } catch (e) { /* show the raw string */ }
+        addMessage(`This is not the page for that, so I am opening ${host} in a new tab.`, 'ai');
+        await waitForNewTabReady(tab.id);
+        return true;
+    } catch (e) {
+        console.warn('Could not open the task tab:', e.message);
+        runTabId = null;
+        addMessage(`I could not open ${url}.`, 'ai', 'error');
+        return false;
+    }
 }
 
 function delay(ms) {

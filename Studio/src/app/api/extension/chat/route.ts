@@ -62,10 +62,16 @@ CRITICAL RULES:
 6. Never repeat an action that did not change the page. Try something else, or ANSWER explaining that you are stuck.
 7. CAPTCHAS: never attempt one. ASK with expecting "text" for the user to read it out, then TYPE their reply.
 8. OTPs: never invent one. After triggering send, ASK with expecting "otp", then TYPE their reply.
-9. Do not re-NAVIGATE to a page you are already on.
-10. Do not give legal or medical advice. Point to official sources instead.
-11. Credit any tool you used in a 'usedTool' field.
-12. Only claim a task is done when the confirmation is actually visible on the page.
+9. ASK only for what you genuinely cannot get: a code sent to their phone, a choice
+   only they can make, confirmation before something irreversible. Anything already
+   stated in the request — a recipient, an address, a subject, a quantity, a name — is
+   yours to use. Asking for it again wastes the run and reads as not listening.
+10. The page you are on may simply be the wrong page. If it cannot do what was asked,
+    NAVIGATE to a site that can instead of hunting through its elements. But never
+    re-NAVIGATE to a page you are already on.
+11. Do not give legal or medical advice. Point to official sources instead.
+12. Credit any tool you used in a 'usedTool' field.
+13. Only claim a task is done when the confirmation is actually visible on the page.
 
 EXAMPLES:
 {"action":"CLICK","elementId":15}
@@ -84,38 +90,91 @@ EXAMPLES:
 Respond in valid JSON only:`;
 
 /**
- * Decides whether a message is a job for the browser at all.
+ * Decides whether a message is a job for the browser at all, and if so, where
+ * that job starts.
  *
- * Rule 1 of the action protocol asks the model to answer conversation with
- * ANSWER instead of touching the page, and on the 4B tier it measurably does
- * not: "hi" came back as CLICK on element #2. This repeats the decision in a
- * turn of its own, with no ELEMENTS table in front of the model to be tempted
- * by, so a greeting cannot start a run at all.
+ * Two decisions in one turn, because they need the same inputs and neither
+ * needs the ELEMENTS table:
+ *
+ *  - kind. Rule 1 of the action protocol asks the model to answer conversation
+ *    with ANSWER instead of touching the page, and on the 4B tier it measurably
+ *    does not: "hi" came back as CLICK on element #2.
+ *  - startUrl. Nothing in the action protocol told the model the page in front
+ *    of it might simply be the wrong page. Asked to send mail while sitting on
+ *    a GitHub repo, it worked that repo's elements until the no-progress guard
+ *    stopped the run. Picking the destination here, before a table of
+ *    irrelevant buttons is in front of the model, is the fix.
  *
  * Same reasoning as the irreversible-action gate in the side panel: a guard the
  * model can skip by choosing to is not a guard.
  */
-const triageProtocol = `You decide whether a message needs browser automation.
+function triagePrompt(url: string, title: string): string {
+    return `You decide whether a message needs browser automation, and where it should happen.
 
-Respond ONLY in valid JSON:
-{"kind":"chat","text":"your reply"}   - conversation, a greeting, a question you can
-                                        answer from your own knowledge, or anything that
-                                        does not require changing a web page.
-{"kind":"task"}                       - the user asked for something to be DONE on a web
-                                        page: navigate, search, fill, click, buy, extract,
-                                        summarise the page in front of them, translate it.
+THE USER IS CURRENTLY LOOKING AT:
+${title || '(untitled)'}
+${url || '(no page)'}
 
-Examples:
-"hi"                                     -> {"kind":"chat","text":"Hi! What would you like me to do on this page?"}
-"who are you"                            -> {"kind":"chat","text":"I am CrewAgent..."}
-"what is the capital of France"          -> {"kind":"chat","text":"Paris."}
-"go to amazon and find formal shoes"     -> {"kind":"task"}
-"summarise this page"                    -> {"kind":"task"}
-"fill this form"                         -> {"kind":"task"}
+Respond ONLY in valid JSON, in one of these three shapes:
 
-When genuinely unsure, choose "task".
+{"kind":"chat","text":"your reply"}
+    Conversation, a greeting, or a question you can answer from your own
+    knowledge. Nothing needs to happen in a browser.
+
+{"kind":"task"}
+    The user wants something done TO THE PAGE ABOVE: summarise it, translate it,
+    fill this form, click something on it, pull data out of it.
+
+{"kind":"task","startUrl":"https://..."}
+    The user wants something done that the page above cannot do. Give the URL
+    where the work actually starts. It opens in a NEW TAB, so the user keeps
+    whatever they were reading.
+
+The user is usually just standing wherever they happened to be. A task that
+names a service, a destination, or an errand almost always needs a startUrl —
+being on a page is not a reason to believe the job belongs to it.
+
+Land as close to the job as you are sure of:
+  email / mail someone      -> https://mail.google.com/mail/u/0/#inbox?compose=new
+  message someone           -> https://web.whatsapp.com/
+  buy / order / find a product -> https://www.amazon.in/
+  look something up         -> https://www.google.com/search?q=URL+ENCODED+QUERY
+  watch / find a video      -> https://www.youtube.com/results?search_query=URL+ENCODED+QUERY
+Otherwise use the site's plain homepage. Never invent a deep link you are not
+sure of: a homepage the agent can navigate from beats a 404 it cannot.
+
+Examples, given the page above:
+"hi"                                -> {"kind":"chat","text":"Hi! What would you like me to do?"}
+"who are you"                       -> {"kind":"chat","text":"I am CrewAgent, I can act on web pages for you."}
+"what is the capital of France"     -> {"kind":"chat","text":"Paris."}
+"summarise this page"               -> {"kind":"task"}
+"fill this form"                    -> {"kind":"task"}
+"star this repo"                    -> {"kind":"task"}
+"mail sam@example.com the update"   -> {"kind":"task","startUrl":"https://mail.google.com/mail/u/0/#inbox?compose=new"}
+"tell priya on whatsapp im late"    -> {"kind":"task","startUrl":"https://web.whatsapp.com/"}
+"order dog food"                    -> {"kind":"task","startUrl":"https://www.amazon.in/"}
+
+Unsure whether it is chat or a task? Choose "task".
+Unsure whether the current page can do the job? Give a startUrl.
 
 Respond in valid JSON only:`;
+}
+
+/**
+ * A model-supplied URL is about to be opened in the user's own browser, so only
+ * http(s) survives. `javascript:` and `data:` must never reach chrome.tabs.create,
+ * and a hallucinated fragment like "a" must fail here rather than as a navigation.
+ */
+function safeStartUrl(value: unknown): string | null {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    try {
+        const parsed = new URL(value.trim());
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+        return parsed.toString();
+    } catch {
+        return null;
+    }
+}
 
 /** How many SEARCH/READ_URL turns we resolve before forcing a real answer. */
 const MAX_RESEARCH_HOPS = 3;
@@ -127,14 +186,17 @@ interface AgentRuntime extends CompiledStack {
     blocked: string | null;
 }
 
-async function loadAgent(agentId: string): Promise<AgentRuntime | null> {
+/** Why an agent could not be loaded. The two causes need different advice. */
+type LoadFailure = 'no-session' | 'not-found';
+
+async function loadAgent(agentId: string): Promise<AgentRuntime | LoadFailure> {
     const supabase = await createClient();
 
     const {
         data: { user },
     } = await supabase.auth.getUser();
 
-    if (!user) return null;
+    if (!user) return 'no-session';
 
     const { data: row, error } = await supabase
         .from('chatflows')
@@ -143,7 +205,7 @@ async function loadAgent(agentId: string): Promise<AgentRuntime | null> {
         .eq('user_id', user.id)
         .single();
 
-    if (error || !row) return null;
+    if (error || !row) return 'not-found';
 
     const stack = readStack(row.data);
     const compiled = compileStack(stack, row.name ?? 'Agent');
@@ -225,7 +287,8 @@ export async function POST(req: NextRequest) {
 
         // The side panel sends the selected agent's id in the 'model' field.
         const agentId = model;
-        const runtime = await loadAgent(agentId);
+        const loaded = await loadAgent(agentId);
+        const runtime = typeof loaded === 'string' ? null : loaded;
 
         // Triage runs before anything reads the page, so it is cheap: no
         // elements, no screenshot, a handful of output tokens.
@@ -236,7 +299,10 @@ export async function POST(req: NextRequest) {
 
             try {
                 const verdict = await runModel({
-                    systemPrompt: triageProtocol,
+                    systemPrompt: triagePrompt(
+                        typeof url === 'string' ? url : '',
+                        typeof title === 'string' ? title : ''
+                    ),
                     messages: [{ role: 'user', content: latest }],
                     model: runtime.model,
                     temperature: 0,
@@ -247,12 +313,18 @@ export async function POST(req: NextRequest) {
                     NextResponse.json({
                         kind: kind === 'chat' ? 'chat' : 'task',
                         text: typeof verdict.payload.text === 'string' ? verdict.payload.text : '',
+                        // Only meaningful on a task; a chat reply never opens a tab.
+                        startUrl: kind === 'chat' ? null : safeStartUrl(verdict.payload.startUrl),
                     }),
                     origin
                 );
             } catch {
-                // Never let triage block real work — fall through to the run.
-                return corsHeaders(NextResponse.json({ kind: 'task', text: '' }), origin);
+                // Never let triage block real work — fall through to the run,
+                // on the page the user is already on.
+                return corsHeaders(
+                    NextResponse.json({ kind: 'task', text: '', startUrl: null }),
+                    origin
+                );
             }
         }
 
@@ -260,7 +332,11 @@ export async function POST(req: NextRequest) {
             return corsHeaders(
                 NextResponse.json({
                     action: 'ANSWER',
-                    text: 'I could not find that agent. Open it in CrewBlocks and check it is still there.',
+                    text:
+                        loaded === 'no-session'
+                            ? 'You are not signed in to CrewBlocks on this origin. Open the dashboard, sign in, then hit the sync button in the panel.'
+                            : 'That agent is not in your account any more. Hit the sync button in the panel to refresh the list.',
+                    errorCode: loaded === 'no-session' ? 'NO_SESSION' : 'AGENT_NOT_FOUND',
                 }),
                 origin
             );
