@@ -1,13 +1,20 @@
 import { NextResponse, NextRequest } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
-import { compileStack, readStack } from '@/lib/blocks';
+import { compileStack, readStack, DEFAULT_VISION } from '@/lib/blocks';
+
+/** One row of `chatflows`, as the agent list needs it. */
+interface ChatflowRow {
+    id: string;
+    name: string;
+    data: unknown;
+}
 
 export async function GET(req: NextRequest) {
     try {
         const supabase = await createClient();
         
-        let { data: authData } = await supabase.auth.getUser();
-        let userId = authData?.user?.id;
+        const { data: authData } = await supabase.auth.getUser();
+        const userId = authData?.user?.id;
 
         if (!userId) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -29,7 +36,7 @@ export async function GET(req: NextRequest) {
 
         const memberSquadIds = (memberships || []).map((membership) => membership.squad_id);
 
-        let squadChatflows: Array<{ id: string; name: string; data: any }> = [];
+        let squadChatflows: ChatflowRow[] = [];
         if (memberSquadIds.length > 0) {
             const { data: squadWorkflowLinks, error: squadWorkflowsError } = await supabase
                 .from('squad_chatflows')
@@ -45,9 +52,9 @@ export async function GET(req: NextRequest) {
 
             if (squadWorkflowsError) throw squadWorkflowsError;
 
-            squadChatflows = (squadWorkflowLinks || [])
-                .map((item: any) => item.chatflows)
-                .filter(Boolean);
+            squadChatflows = (squadWorkflowLinks as unknown as Array<{ chatflows?: ChatflowRow }>)
+                .map((item) => item.chatflows)
+                .filter((row): row is ChatflowRow => !!row);
         }
 
         // Check if the chatflow contains the File Upload tool
@@ -60,16 +67,24 @@ export async function GET(req: NextRequest) {
         // which the compiled stack answers directly.
         const processedModels = uniqueChatflows.map(cf => {
             let hasFileUpload = false;
+            // The side panel has to know before its first turn whether to
+            // capture and mark a screenshot, so the stack's vision settings
+            // ship with the agent list rather than waiting for a chat reply.
+            let vision = DEFAULT_VISION;
+
             try {
-                hasFileUpload = compileStack(readStack(cf.data), cf.name).hasFileUpload;
+                const compiled = compileStack(readStack(cf.data), cf.name);
+                hasFileUpload = compiled.hasFileUpload;
+                vision = compiled.vision;
             } catch {
-                // A malformed row should still list, just without uploads.
+                // A malformed row should still list, just with safe defaults.
             }
 
             return {
                 id: cf.id,
                 name: cf.name,
-                hasFileUpload
+                hasFileUpload,
+                vision
             };
         });
 

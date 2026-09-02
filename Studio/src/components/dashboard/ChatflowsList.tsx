@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useStore } from '@/lib/store';
-import { Blocks, Plus, Trash2, Pencil, Globe, CheckCircle2, ChevronDown, ChevronRight, Users } from 'lucide-react';
+import { Blocks, Plus, Trash2, Pencil, Globe, CheckCircle2, AlertTriangle, X, ChevronDown, ChevronRight, Users } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import DownloadExtensionBtn from '@/components/DownloadExtensionBtn';
@@ -36,6 +36,8 @@ export default function ChatflowsList() {
     const [isSquadOpen, setIsSquadOpen] = useState(true);
     const [workflowToPublish, setWorkflowToPublish] = useState<any | null>(null);
     const [successToast, setSuccessToast] = useState<string | null>(null);
+    const [errorToast, setErrorToast] = useState<string | null>(null);
+    const [isCreating, setIsCreating] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
     const [confirmRemoveSquad, setConfirmRemoveSquad] = useState<string | null>(null);
     const [isActionLoading, setIsActionLoading] = useState(false);
@@ -52,8 +54,19 @@ export default function ChatflowsList() {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) return;
         
-        // Fetch all chatflows user has access to
-        const { data: allFlows } = await supabase.from('chatflows').select('*').order('updated_at', { ascending: false });
+        // Fetch all chatflows user has access to. A failed read used to render
+        // as an empty list, which is indistinguishable from having no agents.
+        const { data: allFlows, error: flowsError } = await supabase
+            .from('chatflows')
+            .select('*')
+            .order('updated_at', { ascending: false });
+
+        if (flowsError) {
+            console.error('Loading agents failed:', flowsError);
+            setErrorToast(`Could not load your agents. ${flowsError.message}`);
+            setLoading(false);
+            return;
+        }
 
         // Only treat workflows as squad workflows if the current user is a member of that squad.
         const { data: memberships } = await supabase
@@ -102,18 +115,53 @@ export default function ChatflowsList() {
         setLoading(false);
     };
 
+    /**
+     * Creates an agent and opens it.
+     *
+     * Every failure here used to be swallowed, so a blocked insert looked
+     * exactly like a dead button. Each one now says what went wrong instead.
+     */
     const handleCreateNew = async () => {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
+        if (isCreating) return;
+        setIsCreating(true);
+        setErrorToast(null);
 
-        const { data } = await supabase.from('chatflows').insert({
-            user_id: user.id,
-            name: 'New agent',
-            data: starterStack()
-        }).select().single();
+        try {
+            const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-        if (data) {
+            if (authError || !user) {
+                setErrorToast('Your session has expired. Log in again to create an agent.');
+                return;
+            }
+
+            const { data, error } = await supabase
+                .from('chatflows')
+                .insert({
+                    user_id: user.id,
+                    name: 'New agent',
+                    data: starterStack()
+                })
+                .select('id')
+                .single();
+
+            if (error) {
+                console.error('Creating an agent failed:', error);
+                setErrorToast(`Could not create the agent. ${error.message}`);
+                return;
+            }
+
+            if (!data?.id) {
+                setErrorToast('The agent was created but could not be opened. Refresh to find it in the list.');
+                await fetchChatflows();
+                return;
+            }
+
             router.push(`/agent/${data.id}`);
+        } catch (err) {
+            console.error('Creating an agent failed:', err);
+            setErrorToast('Could not reach the server. Check your connection and try again.');
+        } finally {
+            setIsCreating(false);
         }
     };
 
@@ -185,6 +233,25 @@ export default function ChatflowsList() {
                 </div>
             )}
 
+            {/* Error Toast */}
+            {errorToast && (
+                <div
+                    role="alert"
+                    className="fixed top-8 left-1/2 -translate-x-1/2 z-100 max-w-lg bg-red-500 text-white pl-5 pr-3 py-2.5 rounded-full shadow-lg flex items-center gap-3 font-semibold text-sm animate-in slide-in-from-top-5 duration-300"
+                >
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span className="min-w-0">{errorToast}</span>
+                    <button
+                        type="button"
+                        onClick={() => setErrorToast(null)}
+                        aria-label="Dismiss"
+                        className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center hover:bg-white/20 transition-colors"
+                    >
+                        <X className="w-4 h-4" />
+                    </button>
+                </div>
+            )}
+
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight text-white flex items-center gap-3">
@@ -198,9 +265,10 @@ export default function ChatflowsList() {
                     <DownloadExtensionBtn />
                     <button
                         onClick={handleCreateNew}
-                        className="flex items-center gap-2 bg-secondary text-secondary-foreground h-11 px-5 rounded-full text-sm font-semibold hover:bg-[#D8D8D8] transition-all shadow-sm whitespace-nowrap"
+                        disabled={isCreating}
+                        className="flex items-center gap-2 bg-secondary text-secondary-foreground h-11 px-5 rounded-full text-sm font-semibold hover:bg-[#D8D8D8] transition-all shadow-sm whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                        <Plus className="w-4 h-4" /> Add New
+                        <Plus className="w-4 h-4" /> {isCreating ? 'Creating…' : 'Add New'}
                     </button>
                 </div>
             </div>
@@ -220,9 +288,10 @@ export default function ChatflowsList() {
                     </p>
                     <button
                         onClick={handleCreateNew}
-                        className="flex items-center gap-2 bg-[#8C52FE] text-white h-11 px-6 rounded-full text-sm font-bold shadow-sm mx-auto"
+                        disabled={isCreating}
+                        className="flex items-center gap-2 bg-[#8C52FE] text-white h-11 px-6 rounded-full text-sm font-bold shadow-sm mx-auto disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                        <Plus className="w-4 h-4" /> Create an agent
+                        <Plus className="w-4 h-4" /> {isCreating ? 'Creating…' : 'Create an agent'}
                     </button>
                 </div>
             ) : (

@@ -33,6 +33,23 @@
               <option value="">Select agent...</option>
             </select>
           </div>
+          <button
+            id="private-toggle"
+            class="action-btn tier-toggle"
+            type="button"
+            role="switch"
+            aria-checked="false"
+            title="Run on this Mac — nothing leaves the device"
+          >
+            <svg class="tier-icon-cloud" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z" />
+            </svg>
+            <svg class="tier-icon-local" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="4" width="20" height="13" rx="2" />
+              <path d="M2 20h20" />
+            </svg>
+            <span class="tier-label">Cloud</span>
+          </button>
           <button id="sync-btn" class="action-btn" title="Sync from Dashboard">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />

@@ -6,8 +6,14 @@ if (!window.__1e_content_script_injected) {
             const context = extractContext();
             sendResponse(context);
         } else if (request.type === "EXECUTE_COMMAND") {
-            executeCommand(request.command);
-            sendResponse({ status: "success" });
+            // executeCommand resolves with the result of the action — a rect for
+            // READ_IMAGE, an error when the element was missing. Replying before
+            // it settles threw all of that away.
+            executeCommand(request.command)
+                .then((result) => sendResponse(result || { status: "success" }))
+                .catch((error) => sendResponse({ error: String(error && error.message || error) }));
+        } else if (request.type === "WAIT_FOR_SETTLE") {
+            waitForSettle(request.timeout).then(sendResponse);
         } else if (request.type === "EXTRACT_TEXT_NODES") {
             const texts = extractTextNodes();
             sendResponse({ texts: texts });
@@ -108,6 +114,29 @@ function toggleLoadingUI(isRunning) {
 
 let nextElementId = 1;
 
+/**
+ * Where an element sits in the viewport, in CSS pixels.
+ *
+ * Returns null for anything with no box or scrolled out of sight — the side
+ * panel draws a numbered badge from this, and a badge for something off screen
+ * would point the model at empty space.
+ */
+function boxOf(el) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 4 || rect.height < 4) return null;
+
+    const withinX = rect.left < window.innerWidth && rect.right > 0;
+    const withinY = rect.top < window.innerHeight && rect.bottom > 0;
+    if (!withinX || !withinY) return null;
+
+    return {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height)
+    };
+}
+
 function extractContext() {
     // Clean up old IDs
     document.querySelectorAll('[data-1e-id]').forEach(el => el.removeAttribute('data-1e-id'));
@@ -123,7 +152,17 @@ function extractContext() {
                 const label = (i.placeholder || i.name || i.id || i.value || i.innerText || i.getAttribute('aria-label') || i.getAttribute('title') || "input").substring(0, 50);
                 if (!i.hasAttribute('data-1e-id')) {
                     i.setAttribute('data-1e-id', nextElementId);
-                    inputs.push({ id: nextElementId, name: label, type: i.type || i.tagName.toLowerCase(), role: i.getAttribute('role') });
+                    // A password field is never a target, and its presence puts
+                    // the whole page into sensitive context.
+                    const isSecret = i.type === 'password';
+                    inputs.push({
+                        id: nextElementId,
+                        name: isSecret ? '(password field)' : label,
+                        type: i.type || i.tagName.toLowerCase(),
+                        role: i.getAttribute('role'),
+                        secret: isSecret || undefined,
+                        box: boxOf(i)
+                    });
                     nextElementId++;
                 }
             }
@@ -139,7 +178,12 @@ function extractContext() {
                 const label = (b.innerText || b.value || b.getAttribute('aria-label') || "").trim().substring(0, 100);
                 if (label && !b.hasAttribute('data-1e-id')) {
                     b.setAttribute('data-1e-id', nextElementId);
-                    buttons.push({ id: nextElementId, text: label, tag: b.tagName.toLowerCase() });
+                    buttons.push({
+                        id: nextElementId,
+                        text: label,
+                        tag: b.tagName.toLowerCase(),
+                        box: boxOf(b)
+                    });
                     nextElementId++;
                 }
             }
@@ -155,7 +199,7 @@ function extractContext() {
                 const label = (img.alt || img.id || img.src || "image").substring(0, 100);
                 if (!img.hasAttribute('data-1e-id')) {
                     img.setAttribute('data-1e-id', nextElementId);
-                    images.push({ id: nextElementId, name: label, type: 'image' });
+                    images.push({ id: nextElementId, name: label, type: 'image', box: boxOf(img) });
                     nextElementId++;
                 }
             }
@@ -174,13 +218,94 @@ function extractContext() {
         console.warn("Failed to extract headings", e);
     }
 
+    const interactable = [...inputs, ...buttons, ...images].slice(0, 400); // Keep payload broad enough for complex pages
+
+    // A password field anywhere on the page, or a card-number field, puts the
+    // run into sensitive context. The side panel refuses to act there.
+    let sensitive = false;
+    try {
+        sensitive = !!document.querySelector(
+            'input[type="password"], input[autocomplete*="cc-number"], input[name*="cardnumber" i]'
+        );
+    } catch (e) {
+        console.warn("Failed to check for sensitive fields", e);
+    }
+
     return {
         page_content: text,
         elements: {
-            interactable: [...inputs, ...buttons, ...images].slice(0, 400), // Keep payload broad enough for complex pages
+            interactable,
             headings: [...new Set(headings)]
-        }
+        },
+        viewport: {
+            width: window.innerWidth,
+            height: window.innerHeight,
+            scrollY: Math.round(window.scrollY),
+            scrollHeight: Math.round(document.documentElement.scrollHeight),
+            devicePixelRatio: window.devicePixelRatio || 1
+        },
+        sensitive,
+        // Cheap fingerprint of "what the page currently is". The loop compares
+        // these across turns to notice it is getting nowhere.
+        stateSignature: [
+            location.href,
+            Math.round(window.scrollY / 100),
+            interactable.length,
+            text.length
+        ].join('|')
     };
+}
+
+/**
+ * Resolves once the page has stopped changing, or the ceiling is hit.
+ *
+ * A fixed delay after an action either wastes time or screenshots a spinner —
+ * and a model shown a spinner reasons very carefully about a loading state.
+ * Waiting for mutations to go quiet costs nothing on a fast page and actually
+ * waits on a slow one.
+ */
+function waitForSettle(timeout) {
+    const ceiling = typeof timeout === 'number' ? timeout : 10000;
+    const quietFor = 400;
+
+    return new Promise((resolve) => {
+        let quietTimer = null;
+        let observer = null;
+        let done = false;
+
+        const finish = (reason) => {
+            if (done) return;
+            done = true;
+            if (quietTimer) clearTimeout(quietTimer);
+            if (observer) observer.disconnect();
+            clearTimeout(hardStop);
+            resolve({ settled: reason === 'quiet', reason });
+        };
+
+        const restartQuietTimer = () => {
+            if (quietTimer) clearTimeout(quietTimer);
+            quietTimer = setTimeout(() => {
+                if (document.readyState === 'complete') finish('quiet');
+                else restartQuietTimer();
+            }, quietFor);
+        };
+
+        const hardStop = setTimeout(() => finish('timeout'), ceiling);
+
+        try {
+            observer = new MutationObserver(restartQuietTimer);
+            observer.observe(document.documentElement, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                characterData: true
+            });
+        } catch (e) {
+            console.warn("Could not observe the page for settling", e);
+        }
+
+        restartQuietTimer();
+    });
 }
 
 function executeCommand(command) {
@@ -190,35 +315,52 @@ function executeCommand(command) {
         try {
             const action = command.action.toUpperCase();
 
-            if (action === "CLICK" && command.elementId) {
-                const el = document.querySelector(`[data-1e-id="${command.elementId}"]`);
+            if (action === "CLICK" && (command.elementId || command.x !== undefined)) {
+                // Id first. Coordinates are the fallback for canvas and
+                // cross-origin iframes, where there is no DOM node to address.
+                const el = command.elementId
+                    ? document.querySelector(`[data-1e-id="${command.elementId}"]`)
+                    : document.elementFromPoint(command.x, command.y);
 
                 if (el) {
+                    if (el.type === 'password') {
+                        resolve({ error: "Refused: that is a password field." });
+                        return;
+                    }
                     el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                     setTimeout(() => {
                         el.click();
-                        resolve();
+                        resolve({ status: "success" });
                     }, 500);
                 } else {
                     console.warn("Element not found for click (ID):", command.elementId);
-                    resolve();
+                    resolve({ error: `No element ${command.elementId} on this page. Re-read the ELEMENTS table.` });
                 }
             } else if (action === "SCROLL") {
                 const dir = (command.direction || "DOWN").toUpperCase();
-                if (dir === "DOWN") {
-                    window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
-                } else {
-                    window.scrollBy({ top: -window.innerHeight * 0.8, behavior: 'smooth' });
-                }
-                setTimeout(resolve, 500);
+                const before = window.scrollY;
+                window.scrollBy({
+                    top: (dir === "DOWN" ? 1 : -1) * window.innerHeight * 0.8,
+                    behavior: 'smooth'
+                });
+                setTimeout(() => {
+                    resolve(window.scrollY === before
+                        ? { error: `Already at the ${dir === "DOWN" ? "bottom" : "top"}. Scrolling further will not help.` }
+                        : { status: "success" });
+                }, 500);
             } else if (action === "TYPE" && command.elementId && command.text) {
                 const el = document.querySelector(`[data-1e-id="${command.elementId}"]`);
+
+                if (el && el.type === 'password') {
+                    resolve({ error: "Refused: that is a password field." });
+                    return;
+                }
 
                 if (el) {
                     el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                     setTimeout(() => {
                         el.focus();
-                        
+
                         // Select existing text to overwrite it
                         const range = document.createRange();
                         range.selectNodeContents(el);
@@ -245,11 +387,11 @@ function executeCommand(command) {
                             el.dispatchEvent(new Event('change', { bubbles: true }));
                         }
 
-                        setTimeout(resolve, 300);
+                        setTimeout(() => resolve({ status: "success" }), 300);
                     }, 300);
                 } else {
                     console.warn("Element not found for type (ID):", command.elementId);
-                    resolve();
+                    resolve({ error: `No element ${command.elementId} on this page. Re-read the ELEMENTS table.` });
                 }
             } else if (action === "NAVIGATE" && command.url) {
                 window.location.href = command.url;

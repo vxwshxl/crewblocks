@@ -4,11 +4,16 @@ const BHASHINI_ENDPOINT = "https://dhruva-api.bhashini.gov.in/services/inference
 const BHASHINI_KEY = process.env.BHASHINI_SUBSCRIPTION_KEY || "KbA_dh-JvZvKpjo152OjtWmHPGindblWZNX-Usvx0SxqP0l0pzGgWoWcRwQ-WuoE";
 
 export async function POST(req: NextRequest) {
+    const origin = req.headers.get('origin');
+
     try {
         const { texts, targetLanguage } = await req.json();
 
         if (!texts || !Array.isArray(texts)) {
-            return NextResponse.json({ error: "texts array is required" }, { status: 400 });
+            return corsHeaders(
+                NextResponse.json({ error: "texts array is required" }, { status: 400 }),
+                origin
+            );
         }
 
         const targetLang = targetLanguage || 'as';
@@ -55,8 +60,8 @@ export async function POST(req: NextRequest) {
 
                 if (data.pipelineResponse && data.pipelineResponse[0] && data.pipelineResponse[0].output) {
                     const outputs = data.pipelineResponse[0].output;
-                    outputs.forEach((outItem: any) => {
-                        translatedTexts.push(outItem.target);
+                    outputs.forEach((outItem: { target?: string }) => {
+                        translatedTexts.push(outItem.target ?? '');
                     });
                 } else {
                     throw new Error("Invalid response missing output array");
@@ -73,12 +78,29 @@ export async function POST(req: NextRequest) {
             throw new Error("Translation failed");
         }
 
-        return NextResponse.json({ translated_texts: translatedTexts });
+        return corsHeaders(NextResponse.json({ translated_texts: translatedTexts }), origin);
 
     } catch (error) {
         console.error("Translate endpoint error:", error);
-        return NextResponse.json({
-            error: "Translation failed. CrewBlocks may be incorrect. Please verify important information."
-        }, { status: 500 });
+        return corsHeaders(
+            NextResponse.json({
+                error: "Translation failed. CrewBlocks may be incorrect. Please verify important information."
+            }, { status: 500 }),
+            origin
+        );
     }
+}
+
+/** The side panel is a chrome-extension:// origin, so it needs these to read a reply. */
+function corsHeaders(response: NextResponse, origin: string | null): NextResponse {
+    response.headers.set('Access-Control-Allow-Origin', origin ?? '*');
+    response.headers.set('Vary', 'Origin');
+    response.headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    response.headers.set('Access-Control-Allow-Credentials', 'true');
+    return response;
+}
+
+export async function OPTIONS(req: NextRequest) {
+    return corsHeaders(new NextResponse(null, { status: 204 }), req.headers.get('origin'));
 }

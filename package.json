@@ -1,0 +1,14 @@
+{
+  "name": "crewblocks-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "./scripts/dev.sh",
+    "dev:ui": "pnpm --dir Studio dev",
+    "dev:model": "./scripts/model-server.sh",
+    "setup:model": "./scripts/setup-model.sh",
+    "build": "pnpm --dir Studio build",
+    "lint": "pnpm --dir Studio lint",
+    "typecheck": "pnpm --dir Studio typecheck"
+  }
+}

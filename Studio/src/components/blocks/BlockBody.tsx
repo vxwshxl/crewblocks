@@ -9,6 +9,7 @@ import {
     MODELS,
     TONES,
     TOOL_LIBRARY,
+    getModel,
     getTool,
     type Block,
     type ConditionBlock,
@@ -18,6 +19,7 @@ import {
     type NoteBlock,
     type ToolBlock,
     type TriggerBlock,
+    type VisionBlock,
 } from '@/lib/blocks';
 
 interface BlockBodyProps {
@@ -38,6 +40,8 @@ export default function BlockBody({ block, onChange }: BlockBodyProps) {
             return <TriggerBody block={block} onChange={onChange} />;
         case 'model':
             return <ModelBody block={block} onChange={onChange} />;
+        case 'vision':
+            return <VisionBody block={block} onChange={onChange} />;
         case 'instruction':
             return <InstructionBody block={block} onChange={onChange} />;
         case 'tool':
@@ -108,12 +112,19 @@ function ModelBody({ block, onChange }: { block: ModelBlock; onChange: (block: B
         <div className="space-y-5">
             <Field label="Model" hint="Which model does the thinking.">
                 {() => (
-                    <ChoiceRow
-                        label="Model"
-                        options={MODELS}
-                        value={block.model}
-                        onChange={(model) => onChange({ ...block, model })}
-                    />
+                    <div className="space-y-2">
+                        <ChoiceRow
+                            label="Model"
+                            options={MODELS}
+                            value={block.model}
+                            renderLabel={(option) => getModel(option)?.label ?? option}
+                            onChange={(model) => onChange({ ...block, model })}
+                        />
+                        <p className="text-xs leading-4 text-muted-foreground">
+                            {getModel(block.model)?.note ??
+                                'Unknown model — pick one from the list above.'}
+                        </p>
+                    </div>
                 )}
             </Field>
 
@@ -169,6 +180,152 @@ function ModelBody({ block, onChange }: { block: ModelBlock; onChange: (block: B
                         onChange={(value) =>
                             onChange({ ...block, responseFormat: value as ModelBlock['responseFormat'] })
                         }
+                    />
+                )}
+            </Field>
+        </div>
+    );
+}
+
+function VisionBody({ block, onChange }: { block: VisionBlock; onChange: (block: Block) => void }) {
+    return (
+        <div className="space-y-5">
+            <Field
+                label="When it looks at the page"
+                hint="Looking is slow — about seven times the cost of a step that works from the page structure alone. Only look is measurably worth it."
+            >
+                {() => (
+                    <div className="space-y-2">
+                        <ChoiceRow
+                            label="When it looks at the page"
+                            options={['off', 'auto', 'always']}
+                            value={block.sight ?? (block.screenshot ? 'always' : 'auto')}
+                            renderLabel={(option) =>
+                                option === 'off'
+                                    ? 'Never'
+                                    : option === 'auto'
+                                      ? 'Only when needed'
+                                      : 'Every step'
+                            }
+                            onChange={(value) =>
+                                onChange({ ...block, sight: value as VisionBlock['sight'] })
+                            }
+                        />
+                        <p className="text-xs leading-4 text-muted-foreground">
+                            {block.sight === 'off'
+                                ? 'Fastest. Works from buttons and fields only — it cannot read a chart or a canvas.'
+                                : block.sight === 'always'
+                                  ? 'Slowest. Every step sends a picture, whether or not it needs one.'
+                                  : 'Recommended. Works from the page structure, and looks when that is not enough.'}
+                        </p>
+                    </div>
+                )}
+            </Field>
+
+            {block.sight !== 'off' && (
+                <label className="flex min-h-11 cursor-pointer items-center justify-between gap-4">
+                    <span className="space-y-1">
+                        <span className="block text-xs font-medium text-foreground">
+                            Number the things it can click
+                        </span>
+                        <span className="block text-xs leading-4 text-muted-foreground">
+                            Draws a badge on every button and field so it names one instead of
+                            guessing where to click. Leave this on.
+                        </span>
+                    </span>
+                    <Switch
+                        checked={block.marks}
+                        onCheckedChange={(marks) => onChange({ ...block, marks })}
+                    />
+                </label>
+            )}
+
+            <Field
+                label="What to hide before sending"
+                hint="Applies to anything leaving this device. On-device models send nothing, so this does not apply to them."
+            >
+                {() => (
+                    <ChoiceRow
+                        label="What to hide before sending"
+                        options={['off', 'standard', 'strict']}
+                        value={block.redaction}
+                        renderLabel={(option) =>
+                            option === 'off'
+                                ? 'Nothing'
+                                : option === 'standard'
+                                  ? 'Faces and personal details'
+                                  : 'Anything that looks personal'
+                        }
+                        onChange={(value) =>
+                            onChange({ ...block, redaction: value as VisionBlock['redaction'] })
+                        }
+                    />
+                )}
+            </Field>
+
+            <Field
+                label="How far it goes alone"
+                hint="Sending, buying, deleting and submitting are the actions this gates."
+            >
+                {() => (
+                    <ChoiceRow
+                        label="How far it goes alone"
+                        options={['supervised', 'autonomous']}
+                        value={block.autonomy}
+                        renderLabel={(option) =>
+                            option === 'supervised' ? 'Ask me first' : 'Run the whole task'
+                        }
+                        onChange={(value) =>
+                            onChange({ ...block, autonomy: value as VisionBlock['autonomy'] })
+                        }
+                    />
+                )}
+            </Field>
+
+            <Field
+                label="Sites it may open"
+                hint="Comma separated. Leave empty to allow anywhere."
+            >
+                {(id) => (
+                    <Input
+                        id={id}
+                        value={block.allowlist}
+                        placeholder="gmail.com, amazon.in"
+                        onChange={(event) => onChange({ ...block, allowlist: event.target.value })}
+                        className="h-9 text-xs"
+                    />
+                )}
+            </Field>
+
+            <Field
+                label="Stop after"
+                hint="A hard ceiling, so a stuck agent gives up instead of grinding."
+            >
+                {(id) => (
+                    <Stepper
+                        id={id}
+                        label="Stop after"
+                        value={block.maxSteps}
+                        min={5}
+                        max={60}
+                        step={5}
+                        format={(value) => `${value} actions`}
+                        onChange={(maxSteps) => onChange({ ...block, maxSteps })}
+                    />
+                )}
+            </Field>
+
+            <Field label="Or after" hint="Whichever limit it reaches first ends the run.">
+                {(id) => (
+                    <Stepper
+                        id={id}
+                        label="Or after"
+                        value={block.maxSeconds}
+                        min={60}
+                        max={900}
+                        step={60}
+                        format={(value) => `${Math.round(value / 60)} minutes`}
+                        onChange={(maxSeconds) => onChange({ ...block, maxSeconds })}
                     />
                 )}
             </Field>

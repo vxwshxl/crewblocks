@@ -10,6 +10,7 @@ const eqBars = equalizer ? equalizer.querySelectorAll('.bar') : [];
 
 // Default backend URL — change this to your deployed URL
 let BACKEND_URL = 'https://crewblocks.vercel.app/api/extension';
+const LOCAL_MODEL_URL = 'http://127.0.0.1:8081/v1';
 
 let modelsData = [];
 let attachedImagesData = [];
@@ -679,6 +680,17 @@ function setButtonState(running) {
 }
 
 function stopAgentLoop() {
+    // A run paused on a question is not "running", but it is still a live run
+    // holding a budget and a checkpoint. Stop has to end that too, or it comes
+    // back the next time the panel opens.
+    if (activeRun && activeRun.status === 'waiting') {
+        document.querySelectorAll('.ask-prompt:not([data-resolved="true"])').forEach((prompt) => {
+            prompt.dataset.resolved = 'true';
+            prompt.querySelectorAll('button, input').forEach((el) => { el.disabled = true; });
+        });
+        clearRun();
+    }
+
     if (isAgentRunning) {
         userRequestedStop = true;
         isAgentRunning = false;
@@ -721,6 +733,19 @@ async function sendMessage() {
     const welcomeScreen = document.querySelector('.welcome-screen');
     if (welcomeScreen) welcomeScreen.remove();
 
+    // A run paused on a question treats the next thing you type as the answer,
+    // so typing into the box works as well as using the buttons. Without this
+    // the reply would start a brand new run and quietly reset every budget.
+    if (activeRun && activeRun.status === 'waiting') {
+        const pending = document.querySelector('.ask-prompt:not([data-resolved="true"])');
+        if (pending) {
+            submitAskAnswer(pending, text);
+        } else {
+            resumeRunWith(text);
+        }
+        return;
+    }
+
     addMessage(text, 'user', 'normal', msgImageData);
     chatHistory.push({ role: "user", content: text, image_data: msgImageData });
 
@@ -737,7 +762,639 @@ function getOriginalUserGoal() {
     return '';
 }
 
-async function runAgentLoop() {
+/* ------------------------------------------------ vision and loop guards -- */
+
+/** Used until the agent list says otherwise. DOM only, supervised, bounded. */
+const DEFAULT_LIMITS = {
+    maxSteps: 25,
+    maxSeconds: 300,
+    autonomy: 'supervised',
+    allowlist: [],
+    sight: 'off',
+    marks: false
+};
+
+/** Cycled so two badges that end up adjacent stay tellable apart. */
+const MARK_COLORS = [
+    '#e6194b', '#3cb44b', '#4363d8', '#f58231',
+    '#911eb4', '#008080', '#9a6324', '#800000'
+];
+
+/** How long to wait for the page to go quiet after an action. */
+const SETTLE_TIMEOUT = 10000;
+
+/** How long a suspended run waits for an answer before giving up. */
+const INPUT_TIMEOUT = 20 * 60 * 1000;
+
+/**
+ * Screenshots kept in the transcript. Vision tokens dominate prefill, so an
+ * unbounded transcript is the single biggest thing that makes a run get slower
+ * the longer it goes — by step 10 you would be re-sending 13k image tokens
+ * every turn. Two is enough to see what just changed.
+ */
+const MAX_HISTORY_IMAGES = 2;
+
+const RUN_STORE_KEY = 'blockagent_active_run';
+
+/**
+ * Whether to force the on-device model regardless of what the agent's Model
+ * block says.
+ *
+ * This is a session switch rather than a stack edit on purpose: "should this
+ * particular run leave my machine" is a decision you make about the page in
+ * front of you, not a property of the agent.
+ */
+let preferLocal = false;
+
+async function setPreferLocal(next, { persist = true } = {}) {
+    preferLocal = !!next;
+
+    const toggle = document.getElementById('private-toggle');
+    if (toggle) {
+        toggle.setAttribute('aria-checked', preferLocal ? 'true' : 'false');
+        const label = toggle.querySelector('.tier-label');
+        if (label) label.textContent = preferLocal ? 'On this Mac' : 'Cloud';
+        toggle.title = preferLocal
+            ? 'Running on this Mac — nothing leaves the device. Click for cloud.'
+            : 'Running in the cloud. Click to run on this Mac instead.';
+    }
+
+    if (persist) {
+        try {
+            await chrome.storage.local.set({ preferLocal });
+        } catch (e) {
+            console.warn('Could not remember the tier:', e.message);
+        }
+    }
+
+    if (preferLocal) checkLocalServer();
+    else if (toggle) toggle.removeAttribute('data-status');
+}
+
+/**
+ * Says up front whether the local server is actually answering.
+ *
+ * Finding out at send time means the failure lands in the middle of a task,
+ * which is the worst moment to learn a background process is not running.
+ */
+async function checkLocalServer() {
+    const toggle = document.getElementById('private-toggle');
+    if (!toggle) return;
+
+    try {
+        const res = await fetch(`${LOCAL_MODEL_URL}/models`, { signal: AbortSignal.timeout(2500) });
+        if (!res.ok) throw new Error(String(res.status));
+        toggle.removeAttribute('data-status');
+    } catch (e) {
+        toggle.dataset.status = 'offline';
+        toggle.title = 'The on-device model is not running. Start it with "pnpm dev:model".';
+        addActivityLog('system', 'On-device model is not responding — start it with "pnpm dev:model"');
+    }
+}
+
+const STOP_REASONS = {
+    STEP_BUDGET_EXCEEDED: 'I used up the actions allowed for this run without finishing.',
+    TIME_BUDGET_EXCEEDED: 'I ran out of working time for this run without finishing.',
+    NO_PROGRESS_LOOP: 'The page stopped changing, so I was going in circles. I stopped instead of looping.',
+    REPEATED_ACTION: 'I was about to repeat an action that had already done nothing. I stopped instead of looping.',
+    CONSECUTIVE_ERRORS: 'Three actions in a row failed, so I stopped rather than keep guessing.',
+    BLOCKED_DOMAIN: 'That site is not on this agent’s allowlist, so I did not open it.',
+    ACTION_TIMEOUT: 'The page never settled after my last action.',
+    INPUT_TIMEOUT: 'I waited for your answer but nothing came, so I let the run go.'
+};
+
+/**
+ * The state of the run in progress, or null.
+ *
+ * This lives outside runAgentLoop on purpose. A call stack cannot be suspended;
+ * a state machine can. Keeping the counters here is what lets the agent stop
+ * for a human and then carry on with the same budget rather than silently
+ * starting over — which is how the step cap used to be defeatable by asking a
+ * question every twenty steps.
+ */
+let activeRun = null;
+let waitingTimer = null;
+
+function newRun(limits) {
+    return {
+        runId: `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        step: 0,
+        workedMs: 0,
+        seen: {},
+        consecutiveErrors: 0,
+        lastActionKey: null,
+        lastSignature: null,
+        limits: limits,
+        status: 'running',
+        pendingAsk: null,
+        waitingSince: null,
+        pendingApprovalKey: null,
+        approvedActionKey: null
+    };
+}
+
+/**
+ * Checkpoints the run so it survives the side panel closing — which it does
+ * whenever the user clicks away, taking every JS variable with it.
+ */
+async function saveRun() {
+    try {
+        if (!activeRun) {
+            await chrome.storage.session.remove(RUN_STORE_KEY);
+            return;
+        }
+        await chrome.storage.session.set({
+            [RUN_STORE_KEY]: {
+                run: activeRun,
+                // Images are dropped: they are large, session storage is not,
+                // and a resumed run re-reads the page anyway.
+                history: chatHistory.map((message) => ({
+                    role: message.role,
+                    content: message.content
+                }))
+            }
+        });
+    } catch (e) {
+        console.warn('Could not checkpoint the run:', e.message);
+    }
+}
+
+async function clearRun() {
+    activeRun = null;
+    if (waitingTimer) {
+        clearTimeout(waitingTimer);
+        waitingTimer = null;
+    }
+    try {
+        await chrome.storage.session.remove(RUN_STORE_KEY);
+    } catch (e) {
+        console.warn('Could not clear the run:', e.message);
+    }
+}
+
+/** Re-attaches to a run that was waiting when the panel was last closed. */
+async function restoreRun() {
+    try {
+        const stored = await chrome.storage.session.get(RUN_STORE_KEY);
+        const saved = stored && stored[RUN_STORE_KEY];
+        if (!saved || !saved.run || saved.run.status !== 'waiting') return;
+
+        if (Date.now() - (saved.run.waitingSince || 0) > INPUT_TIMEOUT) {
+            await clearRun();
+            return;
+        }
+
+        activeRun = saved.run;
+        if (!chatHistory.length && Array.isArray(saved.history)) {
+            chatHistory = saved.history;
+        }
+
+        if (activeRun.pendingAsk) {
+            addMessage('Picking up where we left off — I still need this:', 'ai');
+            renderAskPrompt(activeRun.pendingAsk);
+        }
+    } catch (e) {
+        console.warn('Could not restore the run:', e.message);
+    }
+}
+
+function limitsForSelectedAgent() {
+    const select = document.getElementById('model-select');
+    const selected = select ? select.value : '';
+    const agent = (modelsData || []).find(m => m.id === selected);
+    return Object.assign({}, DEFAULT_LIMITS, (agent && agent.vision) || {});
+}
+
+function reportStop(code, detail) {
+    const base = STOP_REASONS[code] || 'I stopped.';
+    addMessage(detail ? `${base}\n\n${detail}` : base, 'ai', 'error');
+    addActivityLog('system', `Run stopped: ${code}`);
+}
+
+/* ---------------------------------------------------------- asking you -- */
+
+/**
+ * Renders the question the agent paused on, shaped by what it says it needs.
+ *
+ * A yes/no rendered as a text box invites a typo where a button cannot have
+ * one, and an OTP field that accepts prose is just a slower way to fail — so
+ * the control follows the answer, rather than everything falling back to a
+ * chat message.
+ */
+function renderAskPrompt(ask) {
+    const container = document.getElementById('chat-container');
+    if (!container) return;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'ask-prompt';
+
+    const question = document.createElement('p');
+    question.className = 'ask-question';
+    question.textContent = ask.text || 'I need something from you to carry on.';
+    wrap.appendChild(question);
+
+    const expecting = ask.expecting || 'text';
+
+    if (expecting === 'confirmation' || expecting === 'choice') {
+        const options = expecting === 'confirmation'
+            ? ['Yes', 'No']
+            : (ask.options || []);
+
+        const row = document.createElement('div');
+        row.className = 'ask-options';
+
+        options.forEach((option, index) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'ask-chip';
+            // Lead with the affirmative, but never make it the only easy path.
+            if (expecting === 'confirmation' && index === 0) {
+                button.dataset.variant = 'primary';
+            }
+            button.textContent = option;
+            button.addEventListener('click', () => submitAskAnswer(wrap, option));
+            row.appendChild(button);
+        });
+
+        wrap.appendChild(row);
+        container.appendChild(wrap);
+        const first = row.querySelector('button');
+        if (first) setTimeout(() => first.focus(), 50);
+    } else {
+        const row = document.createElement('div');
+        row.className = 'ask-inline';
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.setAttribute('aria-label', ask.text || 'Your answer');
+
+        if (expecting === 'otp' || expecting === 'number') {
+            input.inputMode = 'numeric';
+            input.autocomplete = expecting === 'otp' ? 'one-time-code' : 'off';
+        }
+
+        input.placeholder = expecting === 'otp'
+            ? 'Enter the code'
+            : expecting === 'number'
+                ? 'Enter a number'
+                : 'Your answer';
+
+        const send = document.createElement('button');
+        send.type = 'button';
+        send.className = 'ask-chip';
+        send.dataset.variant = 'primary';
+        send.textContent = 'Send';
+
+        const submit = () => {
+            const value = input.value.trim();
+            if (value) submitAskAnswer(wrap, value);
+        };
+
+        send.addEventListener('click', submit);
+        input.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                submit();
+            }
+        });
+
+        row.appendChild(input);
+        row.appendChild(send);
+        wrap.appendChild(row);
+        container.appendChild(wrap);
+        setTimeout(() => input.focus(), 50);
+    }
+
+    container.scrollTop = container.scrollHeight;
+}
+
+/** Freezes the prompt so it reads as answered, then resumes the run. */
+function submitAskAnswer(wrap, value) {
+    if (wrap.dataset.resolved === 'true') return;
+    wrap.dataset.resolved = 'true';
+
+    wrap.querySelectorAll('button, input').forEach((el) => { el.disabled = true; });
+
+    const controls = wrap.querySelector('.ask-options, .ask-inline');
+    if (controls) {
+        const answered = document.createElement('p');
+        answered.className = 'ask-answered';
+        answered.textContent = `You answered: ${value}`;
+        controls.replaceWith(answered);
+    }
+
+    resumeRunWith(value);
+}
+
+/** Suspends the run on a question and waits, without spending the budget. */
+async function suspendForInput(ask) {
+    if (!activeRun) return;
+
+    activeRun.status = 'waiting';
+    activeRun.pendingAsk = ask;
+    activeRun.waitingSince = Date.now();
+    await saveRun();
+
+    isAgentRunning = false;
+    setButtonState(false);
+
+    renderAskPrompt(ask);
+    addActivityLog('system', 'Waiting for you');
+
+    if (waitingTimer) clearTimeout(waitingTimer);
+    waitingTimer = setTimeout(async () => {
+        if (activeRun && activeRun.status === 'waiting') {
+            reportStop('INPUT_TIMEOUT');
+            await clearRun();
+        }
+    }, INPUT_TIMEOUT);
+}
+
+async function resumeRunWith(value) {
+    if (!activeRun || activeRun.status !== 'waiting') return;
+
+    if (waitingTimer) {
+        clearTimeout(waitingTimer);
+        waitingTimer = null;
+    }
+
+    addMessage(value, 'user');
+    chatHistory.push({
+        role: 'user',
+        content: `The user replied: ${value}\n\nCarry on with the task from where you paused.`
+    });
+
+    // An approval unlocks exactly the action it was asked about, once.
+    if (activeRun.pendingApprovalKey) {
+        const approved = /^(yes|y|ok|okay|sure|go ahead|confirm|do it)$/i.test(value.trim());
+        activeRun.approvedActionKey = approved ? activeRun.pendingApprovalKey : null;
+        activeRun.pendingApprovalKey = null;
+
+        chatHistory.push({
+            role: 'user',
+            content: approved
+                ? 'The user approved that action. Issue it again now, exactly as before.'
+                : 'The user declined that action. Do not attempt it. Choose something else or ANSWER.'
+        });
+    }
+
+    activeRun.status = 'running';
+    activeRun.pendingAsk = null;
+    activeRun.waitingSince = null;
+    await saveRun();
+
+    runAgentLoop({ resume: true });
+}
+
+/* ------------------------------------------------------------- seeing -- */
+
+/**
+ * A viewport screenshot with the element ids drawn onto it.
+ *
+ * This is Set-of-Mark prompting: the model reads a number off a badge and
+ * answers with that number, instead of guessing a pixel coordinate that goes
+ * stale the moment the page reflows. The id it returns is checked against the
+ * element table, so it cannot invent one.
+ */
+async function captureMarkedScreenshot(context, limits, wanted) {
+    if (limits.sight === 'off') return null;
+    if (limits.sight === 'auto' && !wanted) return null;
+
+    const tab = await getActiveTab();
+    if (!tab) return null;
+
+    let dataUrl;
+    try {
+        dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+            format: 'jpeg',
+            quality: 70
+        });
+    } catch (e) {
+        console.warn('Screenshot failed:', e.message);
+        return null;
+    }
+
+    const image = new Image();
+    image.src = dataUrl;
+    try {
+        await image.decode();
+    } catch (e) {
+        console.warn('Screenshot decode failed:', e.message);
+        return null;
+    }
+
+    // Vision tokens scale with pixels, and the grounding comes from the badges
+    // rather than from resolution — so cap the long edge instead of sending a
+    // retina capture and paying four times the prefill for nothing.
+    const LONG_EDGE = 1280;
+    const scale = Math.min(1, LONG_EDGE / Math.max(image.width, image.height));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(image.width * scale);
+    canvas.height = Math.round(image.height * scale);
+
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    if (limits.marks) drawMarks(ctx, canvas, context);
+
+    return canvas.toDataURL('image/jpeg', 0.7);
+}
+
+function drawMarks(ctx, canvas, context) {
+    const viewport = context.viewport;
+    const boxes = ((context.elements || {}).interactable || []).filter(el => el && el.box);
+    if (!viewport || !viewport.width || !boxes.length) return;
+
+    // The capture covers the viewport in device pixels; boxes are CSS pixels.
+    const k = canvas.width / viewport.width;
+
+    ctx.font = '600 11px -apple-system, system-ui, sans-serif';
+    ctx.textBaseline = 'top';
+
+    boxes.forEach((el, index) => {
+        const color = MARK_COLORS[index % MARK_COLORS.length];
+        const x = el.box.x * k;
+        const y = el.box.y * k;
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x, y, el.box.w * k, el.box.h * k);
+
+        const label = String(el.id);
+        const padding = 3;
+        const badgeW = ctx.measureText(label).width + padding * 2;
+        const badgeH = 14;
+
+        // Keep the badge on canvas for anything flush against an edge.
+        const bx = Math.min(Math.max(0, x), canvas.width - badgeW);
+        const by = Math.min(Math.max(0, y), canvas.height - badgeH);
+
+        ctx.fillStyle = color;
+        ctx.fillRect(bx, by, badgeW, badgeH);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(label, bx + padding, by + 2);
+    });
+}
+
+/**
+ * Strips boxes and trims the element table before it goes over the wire.
+ *
+ * The model never needs coordinates — it reads the badge. Boxes exist purely
+ * to draw those badges here, so sending them is paying tokens for something
+ * that gets ignored.
+ */
+function elementsForModel(elements) {
+    if (!elements || !Array.isArray(elements.interactable)) return elements || {};
+
+    return {
+        interactable: elements.interactable.slice(0, 150).map((el) => {
+            const lean = { id: el.id };
+            if (el.text) lean.text = el.text;
+            if (el.name) lean.name = el.name;
+            if (el.type) lean.type = el.type;
+            if (el.role) lean.role = el.role;
+            if (el.secret) lean.secret = true;
+            return lean;
+        }),
+        headings: (elements.headings || []).slice(0, 12)
+    };
+}
+
+/**
+ * Keeps only the newest screenshots in the transcript.
+ *
+ * Without this every past screenshot is re-sent on every turn, so each step
+ * costs more prefill than the last and a long run crawls — worst on the local
+ * tier, which is exactly where the headroom is thinnest.
+ */
+function pruneHistoryImages() {
+    let kept = 0;
+    for (let i = chatHistory.length - 1; i >= 0; i--) {
+        const message = chatHistory[i];
+        if (!message.image_data) continue;
+        if (kept < MAX_HISTORY_IMAGES) {
+            kept++;
+        } else {
+            delete message.image_data;
+        }
+    }
+}
+
+/**
+ * Whether this turn is worth a screenshot.
+ *
+ * Measured on the local 4B tier: ~5.6s for a turn with an image against ~0.8s
+ * without. Looking is not a free upgrade, it is most of the step — so in `auto`
+ * the agent works off the element table and only looks when that table cannot
+ * answer the question.
+ */
+function shouldLook(run, context, requested) {
+    if (run.limits.sight === 'off') return false;
+    if (run.limits.sight === 'always') return true;
+
+    // The model said it needs to look.
+    if (requested) return true;
+
+    // A page with almost nothing addressable is a canvas or a foreign iframe;
+    // the DOM is not going to get any more helpful on the next turn.
+    const count = ((context.elements || {}).interactable || []).length;
+    if (count < 5) return true;
+
+    // The last thing we tried did not work. Look before guessing again.
+    if (run.consecutiveErrors > 0) return true;
+
+    return false;
+}
+
+/**
+ * Words that mean "this cannot be taken back".
+ *
+ * Deliberately matched against the element's own label rather than the model's
+ * intent, because the model is the thing being guarded against.
+ */
+const IRREVERSIBLE = /\b(buy|purchase|place\s*order|pay|checkout|confirm\s*(and|&)?\s*pay|send|submit|delete|remove|cancel\s*(order|booking)|book\s*now|transfer|withdraw|deactivate|unsubscribe)\b/i;
+
+/**
+ * Whether this action needs a yes before it happens.
+ *
+ * The prompt already tells the agent to ASK before anything irreversible, and
+ * on the local 4B tier it measurably does not: asked to "complete the
+ * purchase" it clicked Place order directly. A safety gate that depends on the
+ * model choosing to use it is not a gate, so this repeats the check in code
+ * where the answer does not depend on which model is loaded.
+ */
+function needsConfirmation(run, data, context) {
+    if (run.limits.autonomy !== 'supervised') return null;
+    if (data.action !== 'CLICK') return null;
+
+    const actionKey = `${data.action}:${data.elementId}`;
+    if (run.approvedActionKey === actionKey) return null;
+
+    const element = ((context.elements || {}).interactable || [])
+        .find(el => String(el.id) === String(data.elementId));
+    if (!element) return null;
+
+    const label = String(element.text || element.name || '').trim();
+    if (!label || !IRREVERSIBLE.test(label)) return null;
+
+    return { actionKey, label };
+}
+
+/** Waits for the page to stop mutating, rather than guessing with a delay. */
+async function settlePage() {
+    const tab = await getActiveTab();
+    if (!tab || !tab.id) return { reason: 'no-tab' };
+
+    return new Promise((resolve) => {
+        let finished = false;
+        const finish = (result) => {
+            if (finished) return;
+            finished = true;
+            resolve(result);
+        };
+
+        // The content script may be gone mid-navigation; do not hang on it.
+        const guard = setTimeout(() => finish({ reason: 'timeout' }), SETTLE_TIMEOUT + 500);
+
+        chrome.tabs.sendMessage(
+            tab.id,
+            { type: 'WAIT_FOR_SETTLE', timeout: SETTLE_TIMEOUT },
+            (response) => {
+                void chrome.runtime.lastError;
+                clearTimeout(guard);
+                finish(response || { reason: 'unavailable' });
+            }
+        );
+    });
+}
+
+function hostAllowed(rawUrl, allowlist) {
+    if (!allowlist || !allowlist.length) return true;
+    try {
+        const host = new URL(rawUrl).hostname.toLowerCase();
+        return allowlist.some(entry => host === entry || host.endsWith(`.${entry}`));
+    } catch (e) {
+        return false;
+    }
+}
+
+/* --------------------------------------------------------------- loop -- */
+
+async function runAgentLoop(options) {
+    const resuming = !!(options && options.resume);
+
+    if (!resuming || !activeRun) {
+        activeRun = newRun(limitsForSelectedAgent());
+    }
+
+    const run = activeRun;
+    run.status = 'running';
+
+    // Set when the model answers SEE, consumed by the next turn's capture.
+    let lookNextTurn = false;
+    let looksUsed = 0;
+
     isAgentRunning = true;
     userRequestedStop = false;
     setButtonState(true);
@@ -745,29 +1402,77 @@ async function runAgentLoop() {
     const typingId = 'typing-' + Date.now();
     addTypingIndicator(typingId);
 
+    // Only time spent working counts. Waiting on a person must not spend the
+    // budget, or asking for an OTP times the agent out for being polite.
+    const startedAt = Date.now();
+    const bankWorkedTime = () => {
+        run.workedMs += Date.now() - startedAt;
+    };
+
+    const finish = async (code, detail) => {
+        removeElement(typingId);
+        if (code) reportStop(code, detail);
+        await clearRun();
+    };
+
     try {
         while (isAgentRunning && !userRequestedStop) {
+            if (run.step >= run.limits.maxSteps) {
+                bankWorkedTime();
+                await finish('STEP_BUDGET_EXCEEDED', `I got through ${run.step} of ${run.limits.maxSteps} actions. Tell me what to try next, or raise the limit on the Vision block.`);
+                return;
+            }
 
-            // 1. Extract context from current tab
+            const workedSoFar = run.workedMs + (Date.now() - startedAt);
+            if (workedSoFar > run.limits.maxSeconds * 1000) {
+                bankWorkedTime();
+                await finish('TIME_BUDGET_EXCEEDED', `The limit is ${Math.round(run.limits.maxSeconds / 60)} minutes of working time, set on the Vision block.`);
+                return;
+            }
+
+            run.step++;
+
+            // 1. Read the page.
             const context = await getPageContext();
+            const signature = context.stateSignature || `${context.url}|${run.step}`;
 
-            // 2. Send history and context to backend
+            // The classic deadlock is "the page did not change and the model
+            // tried the same thing again". Catch it on the third repeat rather
+            // than burning the whole step budget discovering it.
+            run.seen[signature] = (run.seen[signature] || 0) + 1;
+            if (run.seen[signature] >= 3) {
+                bankWorkedTime();
+                await finish('NO_PROGRESS_LOOP', `The page has looked identical for ${run.seen[signature]} turns at ${context.url}.`);
+                return;
+            }
+
+            // 2. See the page, but only when looking will actually tell us
+            // something the element table did not.
+            const wantsLook = shouldLook(run, context, lookNextTurn);
+            lookNextTurn = false;
+            const screenshot = await captureMarkedScreenshot(context, run.limits, wantsLook);
+
+            // 3. Ask the model what to do.
             const modelSelect = document.getElementById('model-select');
-            const selectedModel = modelSelect ? modelSelect.value : 'sarvam';
+            const selectedModel = modelSelect ? modelSelect.value : '';
 
+            pruneHistoryImages();
             currentAbortController = new AbortController();
 
             const response = await fetch(`${BACKEND_URL}/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 signal: currentAbortController.signal,
                 body: JSON.stringify({
                     messages: chatHistory,
-                    page_content: context.page_content,
-                    elements: context.elements,
+                    page_content: (context.page_content || '').slice(0, 3000),
+                    elements: elementsForModel(context.elements),
                     url: context.url,
                     title: context.title,
-                    model: selectedModel
+                    model: selectedModel,
+                    screenshot: screenshot,
+                    preferLocal: preferLocal
                 })
             });
 
@@ -776,167 +1481,237 @@ async function runAgentLoop() {
             if (!response.ok) throw new Error('Network response was not ok');
             const data = await response.json();
 
-            // Log assistant's action into history 
-            // Only add valid string content for Sarvam's prompt engine
-            const assistantMessageStr = typeof data.text === "string" ? data.text : JSON.stringify(data);
-            chatHistory.push({
-                role: "assistant",
-                content: assistantMessageStr
-            });
+            // The stack can be edited mid-run, so limits arrive every turn.
+            if (data.limits) Object.assign(run.limits, data.limits);
+
+            const assistantMessageStr = typeof data.text === 'string' ? data.text : JSON.stringify(data);
+            chatHistory.push({ role: 'assistant', content: assistantMessageStr });
 
             if (data.usedTool) {
                 addActivityLog('action', `Agent used tool: ${data.usedTool}`);
             }
 
-            // Note: Update UI right away if the agent generated new memory.
             if (data.memory) {
                 fetchMemory();
             }
 
-            // 3. Evaluate Action
-            if (data.action && data.action !== "ANSWER") {
-                // 0. Prevent running destructive agentic tools directly on the CrewBlocks studio
-                let currentTab = await getActiveTab();
-                if (currentTab && currentTab.url && currentTab.url.includes('localhost:3000/agent')) {
-                    addActivityLog('system', 'Detected Node Editor. Opening a new tab for agentic actions...');
-                    await new Promise((resolve) => {
-                        chrome.tabs.create({ url: 'https://google.com', active: true }, (newTab) => {
-                            // Wait a tiny bit for the tab to initialize
-                            setTimeout(resolve, 1500);
-                        });
+            // 4. The model wants to look. Grant it, capped, and retry the turn.
+            if (data.action === 'SEE') {
+                if (looksUsed >= 3) {
+                    chatHistory.push({
+                        role: 'user',
+                        content: 'You have used all your looks for this run. Work from the ELEMENTS table, or ANSWER explaining what you cannot see.'
                     });
-                    // Re-fetch the newly created active tab
-                    currentTab = await getActiveTab();
+                    // Deliberately NOT refunded. A model that keeps asking to
+                    // look after being refused would otherwise never run out of
+                    // steps, and the budget would never fire.
+                } else {
+                    looksUsed++;
+                    lookNextTurn = true;
+                    addActivityLog('action', `Taking a look: ${data.text || 'the page'}`);
+                    chatHistory.push({
+                        role: 'user',
+                        content: 'Here is the page. Now choose your next action.'
+                    });
+                    // A granted look is not progress, so it does not spend a step.
+                    run.step--;
                 }
+                continue;
+            }
 
-                let msgText = `Executing command: ${data.action} ${data.elementId ? `on element #${data.elementId}` : ''}`;
-                if (data.action === "NAVIGATE") msgText = `Navigating to ${data.url}`;
-                if (data.action === "TYPE") msgText = `Typing "${data.text}" into element #${data.elementId}`;
-                if (data.action === "READ_IMAGE") msgText = `Reading image element #${data.elementId}`;
-
+            // 5. Pausing for the user — the run survives this.
+            if (data.action === 'ASK') {
+                bankWorkedTime();
                 removeElement(typingId);
+                if (data.text) addMessage(data.text, 'ai');
+                await suspendForInput({
+                    text: data.text,
+                    expecting: data.expecting || 'text',
+                    options: data.options
+                });
+                return;
+            }
 
-                let executedResponse = null;
+            // 6. Finished for good.
+            if (!data.action || data.action === 'ANSWER') {
+                bankWorkedTime();
+                removeElement(typingId);
+                addMessage(data.text || 'Task completed.', 'ai');
+                if (Array.isArray(data.citations) && data.citations.length) {
+                    addActivityLog('action', `Cited ${data.citations.length} source${data.citations.length === 1 ? '' : 's'}`);
+                }
+                await clearRun();
+                return;
+            }
 
-                if (data.action === "TRANSLATE" && data.language) {
-                    const selectEl = document.getElementById('translate-lang');
-                    let langName = data.language;
+            // 7. Guard the action before it touches the page.
+            const actionKey = `${data.action}:${data.elementId ?? data.url ?? data.direction ?? ''}`;
+            if (actionKey === run.lastActionKey && signature === run.lastSignature) {
+                bankWorkedTime();
+                await finish('REPEATED_ACTION', `It wanted to run ${data.action} again with nothing on the page having changed.`);
+                return;
+            }
+
+            const confirm = needsConfirmation(run, data, context);
+            if (confirm) {
+                bankWorkedTime();
+                removeElement(typingId);
+                run.pendingApprovalKey = confirm.actionKey;
+                await suspendForInput({
+                    text: `This looks final: “${confirm.label}”. Go ahead?`,
+                    expecting: 'confirmation'
+                });
+                return;
+            }
+
+            if (data.action === 'NAVIGATE' && !hostAllowed(data.url, run.limits.allowlist)) {
+                bankWorkedTime();
+                await finish('BLOCKED_DOMAIN', `It tried to open ${data.url}. Allowed: ${run.limits.allowlist.join(', ')}.`);
+                return;
+            }
+
+            // Keep destructive agentic work off the studio's own editor tab.
+            const currentTab = await getActiveTab();
+            if (currentTab && currentTab.url && currentTab.url.includes('localhost:3000/agent')) {
+                addActivityLog('system', 'Detected the agent editor. Opening a new tab to work in...');
+                await new Promise((resolve) => {
+                    chrome.tabs.create({ url: 'https://google.com', active: true }, () => {
+                        setTimeout(resolve, 1500);
+                    });
+                });
+            }
+
+            removeElement(typingId);
+
+            let executedResponse = null;
+
+            if (data.action === 'TRANSLATE' && data.language) {
+                const selectEl = document.getElementById('translate-lang');
+                let langName = data.language;
+                if (selectEl) {
                     for (let i = 0; i < selectEl.options.length; i++) {
                         if (selectEl.options[i].value === data.language) {
                             langName = selectEl.options[i].text;
                             break;
                         }
                     }
-
-                    // Add typing indicator back for the translation step 
-                    addTypingIndicator(typingId);
-
-                    await performTranslation(data.language, langName);
-                } else {
-                if (data.text) {
-                    addMessage(data.text, 'ai');
                 }
+
+                addMessage(`Translating this page into ${langName}.`, 'ai');
+                addTypingIndicator(typingId);
+                await performTranslation(data.language, langName);
+            } else {
+                if (data.text) addMessage(data.text, 'ai');
+
+                let msgText = `Executing ${data.action}${data.elementId ? ` on element #${data.elementId}` : ''}`;
+                if (data.action === 'NAVIGATE') msgText = `Navigating to ${data.url}`;
+                if (data.action === 'TYPE') msgText = `Typing "${data.text}" into element #${data.elementId}`;
+                if (data.action === 'READ_IMAGE') msgText = `Reading image element #${data.elementId}`;
                 addMessage(msgText, 'ai');
 
-                    // Add typing indicator back for the next step 
-                    addTypingIndicator(typingId);
+                addTypingIndicator(typingId);
+                executedResponse = await executeCommandInPage(data);
 
-                    // Execute command
-                    executedResponse = await executeCommandInPage(data);
-                }
-
-                if (data.action !== "TRANSLATE") {
+                // Wait for the page to actually go quiet. A fixed delay either
+                // wastes time or screenshots a spinner, and a model shown a
+                // spinner reasons very carefully about a loading state.
+                if (data.action === 'NAVIGATE') {
                     await waitAfterAction(data.action);
+                } else {
+                    await settlePage();
                 }
+            }
 
-                if (userRequestedStop) break;
+            run.lastActionKey = actionKey;
+            run.lastSignature = signature;
 
-                const originalGoal = getOriginalUserGoal();
-                let nextGoal = `Action ${data.action} was executed.
+            // One yes buys one action. Clicking the same button again asks again.
+            if (run.approvedActionKey === actionKey) {
+                run.approvedActionKey = null;
+            }
+
+            if (userRequestedStop) break;
+
+            // 8. Count failures, and stop before the model starts flailing.
+            const failure = executedResponse && executedResponse.error;
+            run.consecutiveErrors = failure ? run.consecutiveErrors + 1 : 0;
+
+            if (run.consecutiveErrors >= 3) {
+                bankWorkedTime();
+                await finish('CONSECUTIVE_ERRORS', `The last failure was: ${executedResponse.error}`);
+                return;
+            }
+
+            // 9. Hand the outcome back and go round again.
+            const originalGoal = getOriginalUserGoal();
+            let nextGoal = `Action ${data.action} was executed.
 
 ORIGINAL USER GOAL: "${originalGoal}"
 
-Review the updated WEBPAGE CONTENT and AVAILABLE ELEMENTS carefully.
+Review the updated page and element list carefully.
 
-CRITICAL ANTI-HALLUCINATION RULES:
-- DO NOT say "Task completed" unless you have VISUALLY CONFIRMED the final outcome on the page.
-- For Gmail/Email: The task is ONLY complete when you see the "Message sent" snackbar or confirmation. Filling the recipient field alone is NOT completion. You must also fill Subject and Body and click SEND.
-- For Shopping/E-commerce: The task is ONLY complete when you see an "Order Confirmed" or "Thank You" page.
-- For any multi-step form: Every required field must be filled before submitting.
-- If a dropdown/suggestion appeared after your last action (e.g. an autocomplete suggestion), you MUST click the correct suggestion first before moving to the next field.
+- Do not say the task is done unless the confirmation is visible on the page.
+- Email is only sent when you can see the sent confirmation. Filling the recipient is not sending.
+- An order is only placed when you can see an order-confirmed page.
+- Fill every required field before submitting.
+- If a suggestion list opened after your last action, pick from it before moving on.
+- If you need something only the user has, use ASK. You keep your progress.
 
-What is the next logical action? Only return {"action":"ANSWER"} if the final on-screen confirmation is visible.`;
-                let additionalData = null;
+What is the next logical action?`;
 
-                if (executedResponse && executedResponse.rect) {
-                    try {
-                        const tab = await getActiveTab();
-                        const screenshotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+            let additionalData = null;
 
-                        // Crop the image down in the sidebar context (bypasses page CORS)
-                        const image = new Image();
-                        image.src = screenshotDataUrl;
-                        await new Promise(r => image.onload = r);
+            if (executedResponse && executedResponse.rect) {
+                try {
+                    const tab = await getActiveTab();
+                    const screenshotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
 
-                        const rect = executedResponse.rect;
-                        const dpr = executedResponse.devicePixelRatio || 1;
+                    // Crop in the side panel, which bypasses page CORS.
+                    const image = new Image();
+                    image.src = screenshotDataUrl;
+                    await image.decode();
 
-                        const canvas = document.createElement('canvas');
-                        canvas.width = rect.width * dpr;
-                        canvas.height = rect.height * dpr;
-                        const ctx = canvas.getContext('2d');
+                    const rect = executedResponse.rect;
+                    const dpr = executedResponse.devicePixelRatio || 1;
 
-                        // Draw cropped section
-                        ctx.drawImage(
-                            image,
-                            rect.x * dpr, rect.y * dpr, rect.width * dpr, rect.height * dpr,
-                            0, 0, canvas.width, canvas.height
-                        );
+                    const canvas = document.createElement('canvas');
+                    canvas.width = rect.width * dpr;
+                    canvas.height = rect.height * dpr;
 
-                        additionalData = canvas.toDataURL('image/png');
-                        nextGoal = `Image successfully captured via secure screenshot. Please extract the EXACT literal alphanumeric text shown in this image. Pay STRICT attention to uppercase and lowercase letters. Do NOT try to interpret or guess what it means. Provide the result using {"action":"TYPE", "elementId":<id_of_input_field>, "text":"<exact_literal_text_from_image>"}. What is the next logical action?`;
-                    } catch (captureErr) {
-                        console.error("Tab capture failed:", captureErr);
-                        nextGoal = `Action failed: Could not capture secure screenshot due to cross-origin or capture API restrictions. Please try an alternative approach.`;
-                    }
-                } else if (executedResponse && executedResponse.error) {
-                    nextGoal = `Action failed: ${executedResponse.error}. Please try an alternative approach.`;
+                    canvas.getContext('2d').drawImage(
+                        image,
+                        rect.x * dpr, rect.y * dpr, rect.width * dpr, rect.height * dpr,
+                        0, 0, canvas.width, canvas.height
+                    );
+
+                    additionalData = canvas.toDataURL('image/png');
+                    nextGoal = 'Here is the image you asked to read. Extract the EXACT literal text shown, matching case precisely. Do not interpret it. Reply with {"action":"TYPE","elementId":<input id>,"text":"<exact text>"}.';
+                } catch (captureErr) {
+                    console.error('Tab capture failed:', captureErr);
+                    nextGoal = 'That image could not be captured. Try another approach.';
                 }
-
-                // Prompt the AI to continue based on new context
-                chatHistory.push({
-                    role: "user",
-                    content: nextGoal,
-                    image_data: additionalData
-                });
-
-            } else if (data.action === "ANSWER" || data.text) {
-                // Task is complete, or we require user input
-                removeElement(typingId);
-                const finalMsg = data.text || "Task completed.";
-                addMessage(finalMsg, 'ai');
-                break; // Exit the loop
-            } else {
-                // Fallback
-                removeElement(typingId);
-                addMessage("Task completed.", 'ai');
-                break;
+            } else if (failure) {
+                nextGoal = `Action failed: ${executedResponse.error}\n\nTry a different approach, ASK the user if only they can unblock it, or ANSWER explaining what is in the way.`;
             }
+
+            chatHistory.push({ role: 'user', content: nextGoal, image_data: additionalData });
+            await saveRun();
         }
 
+        bankWorkedTime();
         removeElement(typingId);
+        if (userRequestedStop) await clearRun();
     } catch (error) {
+        bankWorkedTime();
         if (error.name === 'AbortError') {
             console.log('Fetch aborted by user.');
+            await clearRun();
         } else {
             console.error('Chat error:', error);
             removeElement(typingId);
-            addMessage("BlockAgent encountered an error connecting to the backend. Please verify your connection.", 'ai', 'error');
+            addMessage('BlockAgent could not reach the backend. Check your connection and that you are signed in to CrewBlocks.', 'ai', 'error');
+            await clearRun();
         }
-
-        // On error, let the user retry
-        isAgentRunning = false;
-        setButtonState(false);
     } finally {
         isAgentRunning = false;
         setButtonState(false);
@@ -1343,11 +2118,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         modelSelect.value = data.selectedModel;
     }
 
+    const privateToggle = document.getElementById('private-toggle');
+    if (privateToggle) {
+        const stored = await chrome.storage.local.get(['preferLocal']);
+        await setPreferLocal(!!stored.preferLocal, { persist: false });
+
+        privateToggle.addEventListener('click', async () => {
+            await setPreferLocal(!preferLocal);
+            addMessage(
+                preferLocal
+                    ? 'Switched to the on-device model. Nothing leaves this Mac from here on.'
+                    : 'Switched to the cloud model. Faster, but the page and screenshots leave the device.',
+                'ai',
+                'success'
+            );
+        });
+    }
+
     if (modelSelect) {
         // Initial load
         setTimeout(() => {
             fetchHistory();
             fetchMemory();
+            // Closing the side panel destroys every variable in here, so a run
+            // that was waiting on an answer has to be picked back up from the
+            // checkpoint rather than silently abandoned.
+            restoreRun();
         }, 300);
 
         modelSelect.addEventListener('change', async (e) => {

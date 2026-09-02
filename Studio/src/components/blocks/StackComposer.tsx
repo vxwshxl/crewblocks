@@ -14,6 +14,7 @@ import {
     type NoteBlock,
     type ToolBlock,
     type TriggerBlock,
+    type VisionBlock,
 } from '@/lib/blocks';
 
 interface StackComposerProps {
@@ -30,7 +31,8 @@ Reply with ONLY a JSON object of this shape:
 Block shapes — use exactly these fields, nothing else:
 
 {"kind":"trigger","title":"Trigger","when":"message"|"page-open"|"selection","urlContains":"amazon.in" or ""}
-{"kind":"model","title":"Model","model":"gemini-pro-latest","tone":"short phrase","temperature":0.0-1.0,"responseFormat":"markdown"|"plain"}
+{"kind":"model","title":"Model","model":"qwen/qwen3-vl-8b-instruct","tone":"short phrase","temperature":0.0-1.0,"responseFormat":"markdown"|"plain"}
+{"kind":"vision","title":"Vision","sight":"off"|"auto"|"always","marks":true,"redaction":"standard","autonomy":"supervised"|"autonomous","allowlist":"gmail.com, amazon.in" or "","maxSteps":5-60,"maxSeconds":60-900}
 {"kind":"instruction","title":"short name","text":"one thing the agent must do","priority":"normal"|"critical"}
 {"kind":"tool","title":"tool name","toolId":"ID FROM LIST","config":{}}
 {"kind":"memory","title":"Memory","recall":10,"write":true}
@@ -42,6 +44,12 @@ TOOL_IDS
 
 Rules:
 - Start with exactly one trigger block, then exactly one model block.
+- Add exactly one vision block whenever the agent has to DO things on a page rather
+  than only answer questions. Keep "marks" true — it is what lets the agent click
+  reliably. Use sight "auto" unless the description is about reading charts or canvases
+  ("always"), or is purely text work ("off") — "always" makes every step several times
+  slower. Use "autonomous" only when the description says to run without asking.
+- Set allowlist when the description names specific sites. Leave it "" otherwise.
 - Give each instruction ONE job. Three focused instructions beat one long one.
 - Mark an instruction "critical" only when breaking it would be harmful or costly.
 - Add a tool block only when the description actually needs that capability.
@@ -56,7 +64,16 @@ const EXAMPLES = [
     'A study agent that summarises any page into flashcards',
 ];
 
-const VALID_KINDS = ['trigger', 'model', 'instruction', 'tool', 'memory', 'condition', 'note'];
+const VALID_KINDS = [
+    'trigger',
+    'model',
+    'vision',
+    'instruction',
+    'tool',
+    'memory',
+    'condition',
+    'note',
+];
 
 /**
  * Takes whatever the model returned and rebuilds it through `createBlock`, so a
@@ -99,6 +116,35 @@ function adoptBlocks(raw: unknown): Block[] {
                     block.temperature = Math.min(1, Math.max(0, Math.round(temperature * 10) / 10));
                 }
                 if (candidate.responseFormat === 'plain') block.responseFormat = 'plain';
+                if (title) block.title = title;
+                blocks.push(block);
+                break;
+            }
+            case 'vision': {
+                const block = createBlock('vision') as VisionBlock;
+                if (['off', 'auto', 'always'].includes(String(candidate.sight))) {
+                    block.sight = candidate.sight as VisionBlock['sight'];
+                }
+                if (typeof candidate.marks === 'boolean') block.marks = candidate.marks;
+                if (['off', 'standard', 'strict'].includes(String(candidate.redaction))) {
+                    block.redaction = candidate.redaction as VisionBlock['redaction'];
+                }
+                if (['supervised', 'autonomous'].includes(String(candidate.autonomy))) {
+                    block.autonomy = candidate.autonomy as VisionBlock['autonomy'];
+                }
+                if (typeof candidate.allowlist === 'string') {
+                    block.allowlist = candidate.allowlist.slice(0, 200);
+                }
+                // Clamp rather than trust: a hallucinated budget of 5000 steps
+                // would defeat the point of having a budget at all.
+                const maxSteps = Number(candidate.maxSteps);
+                if (Number.isFinite(maxSteps)) {
+                    block.maxSteps = Math.min(60, Math.max(5, Math.round(maxSteps)));
+                }
+                const maxSeconds = Number(candidate.maxSeconds);
+                if (Number.isFinite(maxSeconds)) {
+                    block.maxSeconds = Math.min(900, Math.max(60, Math.round(maxSeconds)));
+                }
                 if (title) block.title = title;
                 blocks.push(block);
                 break;

@@ -1043,3 +1043,161 @@ textarea::placeholder {
   object-fit: cover;
   border: 1px solid var(--ds-border);
 }
+
+/* ---------------------------------------------------------------- ask -- */
+/*
+ * The agent pausing for something only the person has: an OTP, a choice, a
+ * yes or no. Rendered inline in the transcript so the question sits where it
+ * was asked, and shaped by what the model says it is expecting.
+ */
+
+.ask-prompt {
+  align-self: stretch;
+  max-width: 100%;
+  margin: 2px 0 4px;
+  padding: 13px 14px;
+  border-radius: 14px;
+  background: var(--accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--ds-border-strong);
+  animation: fade-in-up 300ms var(--ease-quick);
+}
+
+.ask-prompt[data-resolved="true"] {
+  background: var(--ds-bg-subtle);
+  box-shadow: inset 0 0 0 1px var(--ds-border);
+  opacity: 0.62;
+}
+
+.ask-question {
+  margin: 0 0 11px;
+  line-height: 1.55;
+  color: var(--ds-fg);
+}
+
+.ask-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ask-chip {
+  min-height: 36px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--ds-border-strong);
+  background: var(--ds-bg-elevated);
+  color: var(--ds-fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 120ms var(--ease-quick), border-color 120ms var(--ease-quick);
+}
+
+.ask-chip:hover:not(:disabled) {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+
+.ask-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ask-chip[data-variant="primary"] {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-fg);
+}
+
+.ask-chip[data-variant="primary"]:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+.ask-chip:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.ask-inline {
+  display: flex;
+  gap: 8px;
+}
+
+.ask-inline input {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--ds-border-strong);
+  background: var(--ds-bg);
+  color: var(--ds-fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+.ask-inline input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+
+/* An OTP is read off a screen and typed once — give it room per character. */
+.ask-inline input[inputmode="numeric"] {
+  letter-spacing: 0.18em;
+  font-variant-numeric: tabular-nums;
+}
+
+.ask-answered {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ds-fg-secondary);
+}
+
+/* ---------------------------------------------------------- tier toggle -- */
+/*
+ * Cloud or on-device, switched without leaving the panel. The label is always
+ * a word, never only an icon — "is my data leaving this machine" is not a
+ * question to answer by interpreting a glyph.
+ */
+
+.tier-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding-inline: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.tier-toggle .tier-icon-local,
+.tier-toggle[aria-checked="true"] .tier-icon-cloud {
+  display: none;
+}
+
+.tier-toggle[aria-checked="true"] .tier-icon-local {
+  display: block;
+}
+
+.tier-toggle[aria-checked="true"] {
+  color: var(--primary-fg);
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.tier-toggle[aria-checked="true"]:hover {
+  background: var(--primary-hover);
+}
+
+.tier-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The local server can be down; say so rather than failing at send time. */
+.tier-toggle[data-status="offline"] {
+  background: var(--danger-subtle);
+  border-color: var(--danger);
+  color: var(--danger);
+}

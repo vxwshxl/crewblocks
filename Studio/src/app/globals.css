@@ -361,6 +361,8 @@
   --ds-block-trigger-wash: oklch(0.82 0.16 85 / 14%);
   --ds-block-model:        oklch(0.72 0.15 265);
   --ds-block-model-wash:   oklch(0.72 0.15 265 / 16%);
+  --ds-block-vision:       oklch(0.84 0.14 232);
+  --ds-block-vision-wash:  oklch(0.84 0.14 232 / 14%);
   --ds-block-instruction:  oklch(0.80 0.13 200);
   --ds-block-instruction-wash: oklch(0.80 0.13 200 / 14%);
   --ds-block-tool:         oklch(0.78 0.15 320);

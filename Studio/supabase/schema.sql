@@ -17,35 +17,6 @@
 -- gen_random_uuid() lives in pgcrypto. Supabase usually has it; ensure it.
 create extension if not exists pgcrypto;
 
--- ----------------------------------------------------------------------------
--- Helper functions (SECURITY DEFINER = bypass RLS, break the recursion cycle)
--- ----------------------------------------------------------------------------
-
--- Squads the current user belongs to.
-create or replace function public.user_squad_ids()
-returns setof uuid
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select squad_id from public.squad_members where user_id = auth.uid()
-$$;
-
--- Is the current user the owner of the given squad?
-create or replace function public.is_squad_owner(target_squad uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select exists (
-    select 1 from public.squads
-    where id = target_squad and owner_id = auth.uid()
-  )
-$$;
-
 -- =============================================================================
 -- Tables
 -- =============================================================================
@@ -164,6 +135,39 @@ create table if not exists public.marketplace_ratings (
 );
 create index if not exists marketplace_ratings_workflow_idx
   on public.marketplace_ratings(workflow_id);
+
+-- ----------------------------------------------------------------------------
+-- Helper functions (SECURITY DEFINER = bypass RLS, break the recursion cycle)
+--
+-- These must come *after* the tables. A `language sql` body is parsed when the
+-- function is created, so declaring these first fails with 42P01 on a fresh
+-- database: public.squad_members does not exist yet.
+-- ----------------------------------------------------------------------------
+
+-- Squads the current user belongs to.
+create or replace function public.user_squad_ids()
+returns setof uuid
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select squad_id from public.squad_members where user_id = auth.uid()
+$$;
+
+-- Is the current user the owner of the given squad?
+create or replace function public.is_squad_owner(target_squad uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.squads
+    where id = target_squad and owner_id = auth.uid()
+  )
+$$;
 
 -- =============================================================================
 -- Row Level Security

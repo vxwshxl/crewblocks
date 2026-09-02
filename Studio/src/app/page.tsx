@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./landing.css";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
@@ -9,11 +9,15 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { Info, MonitorSmartphone, ChevronDown } from "lucide-react";
 import DownloadExtensionBtn from "@/components/DownloadExtensionBtn";
+import { createClient } from "@/utils/supabase/client";
 
 export default function Home() {
   const router = useRouter();
   const heroRef = useRef<HTMLDivElement>(null);
   const [showInfoWarning, setShowInfoWarning] = useState(false);
+  const supabase = useMemo(() => createClient(), []);
+  /** null until the session check resolves, so the nav never flashes the wrong button. */
+  const [signedIn, setSignedIn] = useState<boolean | null>(null);
 
   useEffect(() => {
     // Register GSAP plugins
@@ -372,12 +376,35 @@ export default function Home() {
     };
   }, []);
 
+  // Who the nav is for. Signing out in another tab has to be reflected here,
+  // so this listens rather than only reading once.
+  useEffect(() => {
+    let cancelled = false;
+
+    supabase.auth.getUser().then(({ data }) => {
+      if (!cancelled) setSignedIn(Boolean(data.user));
+    });
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSignedIn(Boolean(session?.user));
+    });
+
+    return () => {
+      cancelled = true;
+      sub.subscription.unsubscribe();
+    };
+  }, [supabase]);
+
   const goToLogin = () => {
     router.push("/login");
   };
 
   const goToSignup = () => {
     router.push("/signup");
+  };
+
+  const goToDashboard = () => {
+    router.push("/dashboard");
   };
 
   return (
@@ -388,24 +415,36 @@ export default function Home() {
           <span className="brand-name font-bold">CrewBlocks</span>
         </div>
         <div className="nav-right">
-          <div className="desktop-nav">
-            <div className="login" onClick={goToLogin}>
-              <svg
-                className="account-icon"
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                <circle cx="12" cy="7" r="4"></circle>
-              </svg>
-              <span>Log in</span>
-            </div>
-            <button className="btn-primary" onClick={goToSignup}>Get Started</button>
+          <div
+            className="desktop-nav"
+            /* Hidden rather than unmounted while the session is unknown, so the
+               navbar keeps its width and nothing shifts when it resolves. */
+            style={{ visibility: signedIn === null ? "hidden" : "visible" }}
+          >
+            {!signedIn && (
+              <div className="login" onClick={goToLogin}>
+                <svg
+                  className="account-icon"
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="12" cy="7" r="4"></circle>
+                </svg>
+                <span>Log in</span>
+              </div>
+            )}
+            <button
+              className="btn-primary"
+              onClick={signedIn ? goToDashboard : goToSignup}
+            >
+              {signedIn ? "Dashboard" : "Get Started"}
+            </button>
           </div>
           <div className="mobile-nav relative">
             <MonitorSmartphone />

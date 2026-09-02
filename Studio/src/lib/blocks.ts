@@ -19,6 +19,7 @@ import {
     Database,
     GitBranch,
     StickyNote,
+    Eye,
 } from 'lucide-react';
 
 /* ---------------------------------------------------------------- kinds -- */
@@ -26,6 +27,7 @@ import {
 export const BLOCK_KINDS = [
     'trigger',
     'model',
+    'vision',
     'instruction',
     'tool',
     'memory',
@@ -61,6 +63,41 @@ export interface ModelBlock extends BlockCommon {
     /** 0–1, stepped by 0.1. Higher is looser. */
     temperature: number;
     responseFormat: 'markdown' | 'plain';
+}
+
+/**
+ * How the agent perceives the page, and how far it may go on its own.
+ *
+ * Screenshots are what make a page legible when the DOM alone is not — canvas,
+ * cross-origin iframes, anything drawn rather than marked up. `marks` overlays
+ * a numbered badge on every interactable element so the model answers with an
+ * element id it can be held to, instead of a pixel coordinate it cannot.
+ */
+export interface VisionBlock extends BlockCommon {
+    kind: 'vision';
+    /**
+     * When to spend a screenshot.
+     *
+     * Measured on the local 4B tier: a turn with an image costs ~5.6s, the same
+     * turn on the element table alone costs ~0.8s. Vision is seven times the
+     * price of the whole rest of the step, so "always" is the wrong default —
+     * `auto` sends one only when the DOM is not enough.
+     */
+    sight: 'off' | 'auto' | 'always';
+    /** Legacy: the boolean this replaced. Read on load, never written. */
+    screenshot?: boolean;
+    /** Draw numbered badges over interactables before sending. Needs screenshot. */
+    marks: boolean;
+    /** How hard to scrub before anything leaves the device. */
+    redaction: 'off' | 'standard' | 'strict';
+    /** Whether irreversible actions stop and ask. */
+    autonomy: 'supervised' | 'autonomous';
+    /** Comma-separated hosts the agent may navigate to. Empty means anywhere. */
+    allowlist: string;
+    /** Hard ceiling on loop turns before the run aborts. */
+    maxSteps: number;
+    /** Hard ceiling in seconds. */
+    maxSeconds: number;
 }
 
 export interface InstructionBlock extends BlockCommon {
@@ -101,6 +138,7 @@ export interface NoteBlock extends BlockCommon {
 export type Block =
     | TriggerBlock
     | ModelBlock
+    | VisionBlock
     | InstructionBlock
     | ToolBlock
     | MemoryBlock
@@ -136,10 +174,47 @@ export interface ToolField {
 
 export const TOOL_LIBRARY: ToolSpec[] = [
     {
+        // Id kept from the pre-Brave version so existing stacks keep working.
         id: 'web-search',
         name: 'Web search',
         description: 'Look things up on the live web before answering.',
-        fields: [],
+        fields: [
+            {
+                key: 'count',
+                label: 'Results per search',
+                placeholder: '',
+                type: 'choice',
+                options: ['3', '5', '10'],
+            },
+            {
+                key: 'freshness',
+                label: 'How recent',
+                placeholder: '',
+                type: 'choice',
+                options: ['Any time', 'Past day', 'Past week', 'Past month', 'Past year'],
+            },
+            {
+                key: 'citations',
+                label: 'Require citations',
+                placeholder: '',
+                type: 'choice',
+                options: ['Yes', 'No'],
+            },
+        ],
+    },
+    {
+        id: 'translate',
+        name: 'Translate page',
+        description: 'Rewrite the page in another Indian language, in place.',
+        fields: [
+            {
+                key: 'language',
+                label: 'Translate into',
+                placeholder: '',
+                type: 'choice',
+                options: ['Assamese', 'Bengali', 'Bodo', 'Hindi', 'English'],
+            },
+        ],
     },
     {
         id: 'summarizer',
@@ -283,7 +358,68 @@ export function getTool(toolId: string): ToolSpec | undefined {
     return TOOL_LIBRARY.find((t) => t.id === toolId);
 }
 
-export const MODELS = ['gemini-pro-latest', 'gemini-flash-latest'] as const;
+/* --------------------------------------------------------------- models -- */
+
+export type ModelProvider = 'openai-compatible' | 'gemini';
+
+export interface ModelSpec {
+    id: string;
+    label: string;
+    /** Decides which client in `providers.ts` handles the call. */
+    provider: ModelProvider;
+    /** Whether this model can be sent a screenshot at all. */
+    vision: boolean;
+    /** Runs on the user's own machine — nothing leaves the device. */
+    local: boolean;
+    /** One line for the picker, saying what the trade is. */
+    note: string;
+}
+
+/**
+ * Both Qwen entries are the same model family over the same OpenAI-compatible
+ * API, so moving between them is a base-URL change. The sizes differ because
+ * the machines do: the cloud has headroom, a fanless laptop does not.
+ */
+export const MODEL_CATALOG: ModelSpec[] = [
+    {
+        id: 'qwen/qwen3-vl-8b-instruct',
+        label: 'Qwen3-VL 8B · cloud',
+        provider: 'openai-compatible',
+        vision: true,
+        local: false,
+        note: 'Best grounding. Screenshots leave the device, so redaction applies.',
+    },
+    {
+        id: 'qwen3-vl-4b-instruct',
+        label: 'Qwen3-VL 4B · on this Mac',
+        provider: 'openai-compatible',
+        vision: true,
+        local: true,
+        note: 'Nothing leaves the device. Slower, and needs the local model server running.',
+    },
+    {
+        id: 'gemini-flash-latest',
+        label: 'Gemini Flash',
+        provider: 'gemini',
+        vision: true,
+        local: false,
+        note: 'Fast and cheap. Needs a Gemini key under API keys.',
+    },
+    {
+        id: 'gemini-pro-latest',
+        label: 'Gemini Pro',
+        provider: 'gemini',
+        vision: true,
+        local: false,
+        note: 'Stronger reasoning, slower. Needs a Gemini key under API keys.',
+    },
+];
+
+export function getModel(id: string): ModelSpec | undefined {
+    return MODEL_CATALOG.find((m) => m.id === id);
+}
+
+export const MODELS = MODEL_CATALOG.map((m) => m.id);
 
 export const TONES = [
     'Helpful assistant',
@@ -342,6 +478,27 @@ export const BLOCK_SPECS: Record<BlockKind, BlockSpec> = {
         summary: (b) => {
             const m = b as ModelBlock;
             return `${m.model} · ${m.tone.toLowerCase()}`;
+        },
+    },
+    vision: {
+        kind: 'vision',
+        label: 'Vision',
+        description: 'Lets the agent see the page, and sets how far it goes alone.',
+        icon: Eye,
+        accentVar: 'var(--ds-block-vision)',
+        washVar: 'var(--ds-block-vision-wash)',
+        singleton: true,
+        summary: (b) => {
+            const v = b as VisionBlock;
+            const sight =
+                v.sight === 'off'
+                    ? 'Reads the page structure only'
+                    : v.sight === 'always'
+                      ? (v.marks ? 'Always looks, with numbered marks' : 'Always looks')
+                      : (v.marks ? 'Looks when needed, with marks' : 'Looks when needed');
+            const reach =
+                v.autonomy === 'autonomous' ? 'runs on its own' : 'asks before anything risky';
+            return `${sight} · ${reach}`;
         },
     },
     instruction: {
@@ -426,6 +583,7 @@ export const BLOCK_SPECS: Record<BlockKind, BlockSpec> = {
 export const ADD_MENU_ORDER: BlockKind[] = [
     'instruction',
     'tool',
+    'vision',
     'memory',
     'condition',
     'model',
@@ -455,6 +613,19 @@ export function createBlock(kind: BlockKind, toolId?: string): Block {
                 temperature: 0.7,
                 responseFormat: 'markdown',
             };
+        case 'vision':
+            return {
+                ...base,
+                kind,
+                title: 'Vision',
+                sight: 'auto',
+                marks: true,
+                redaction: 'standard',
+                autonomy: 'supervised',
+                allowlist: '',
+                maxSteps: 25,
+                maxSeconds: 300,
+            };
         case 'instruction':
             return { ...base, kind, title: 'Instruction', text: '', priority: 'normal' };
         case 'tool': {
@@ -480,10 +651,11 @@ export function createBlock(kind: BlockKind, toolId?: string): Block {
 export function starterStack(): BlockStack {
     const trigger = createBlock('trigger');
     const model = createBlock('model');
+    const vision = createBlock('vision');
     const instruction = createBlock('instruction') as InstructionBlock;
     instruction.text = 'Be concise. Ask before doing anything that costs money.';
 
-    return { version: 2, blocks: [trigger, model, instruction] };
+    return { version: 2, blocks: [trigger, model, vision, instruction] };
 }
 
 export function emptyStack(): BlockStack {
@@ -676,7 +848,55 @@ export interface CompiledStack {
     toolNames: string[];
     /** Whether the side panel should offer a file picker. */
     hasFileUpload: boolean;
+    /** What the side panel must capture, and how far it may go unattended. */
+    vision: CompiledVision;
+    /** Live web search, when a Web search tool block is on the stack. */
+    search: CompiledSearch | null;
 }
+
+export interface CompiledVision {
+    sight: 'off' | 'auto' | 'always';
+    marks: boolean;
+    redaction: 'off' | 'standard' | 'strict';
+    autonomy: 'supervised' | 'autonomous';
+    /** Hostnames the agent may navigate to. Empty means anywhere. */
+    allowlist: string[];
+    maxSteps: number;
+    maxSeconds: number;
+}
+
+export interface CompiledSearch {
+    count: number;
+    /** Provider-neutral recency window, or null for any time. */
+    freshness: 'day' | 'week' | 'month' | 'year' | null;
+    citations: boolean;
+}
+
+/** What a stack with no Vision block runs on: DOM only, supervised, bounded. */
+export const DEFAULT_VISION: CompiledVision = {
+    sight: 'off',
+    marks: false,
+    redaction: 'standard',
+    autonomy: 'supervised',
+    allowlist: [],
+    maxSteps: 25,
+    maxSeconds: 300,
+};
+
+const FRESHNESS_CODES: Record<string, CompiledSearch['freshness']> = {
+    'Past day': 'day',
+    'Past week': 'week',
+    'Past month': 'month',
+    'Past year': 'year',
+};
+
+const LANGUAGE_CODES: Record<string, string> = {
+    Assamese: 'as',
+    Bengali: 'bn',
+    Bodo: 'brx',
+    Hindi: 'hi',
+    English: 'en',
+};
 
 /**
  * Turns a stack into the prompt the browser agent runs on.
@@ -688,6 +908,7 @@ export function compileStack(stack: BlockStack, agentName: string): CompiledStac
     const live = stack.blocks.filter((b) => b.enabled);
 
     const modelBlock = live.find((b): b is ModelBlock => b.kind === 'model');
+    const visionBlock = live.find((b): b is VisionBlock => b.kind === 'vision');
     const memoryBlock = live.find((b): b is MemoryBlock => b.kind === 'memory');
     const triggerBlock = live.find((b): b is TriggerBlock => b.kind === 'trigger');
     const instructions = live.filter((b): b is InstructionBlock => b.kind === 'instruction');
@@ -724,6 +945,87 @@ export function compileStack(stack: BlockStack, agentName: string): CompiledStac
         );
     }
 
+    // Perception and limits compile high on purpose. They describe what the
+    // model is allowed to do at all, so nothing written below can argue past
+    // them — later text loses to earlier text when the model has to choose.
+    const vision: CompiledVision = visionBlock
+        ? {
+              // Blocks saved before `sight` existed carry the old boolean.
+              sight: visionBlock.sight ?? (visionBlock.screenshot ? 'always' : 'off'),
+              marks: visionBlock.marks,
+              redaction: visionBlock.redaction,
+              autonomy: visionBlock.autonomy,
+              allowlist: visionBlock.allowlist
+                  .split(',')
+                  .map((host) => host.trim().toLowerCase())
+                  .filter(Boolean),
+              maxSteps: visionBlock.maxSteps,
+              maxSeconds: visionBlock.maxSeconds,
+          }
+        : DEFAULT_VISION;
+
+    if (vision.sight !== 'off') {
+        const seeing = [
+            'HOW YOU SEE THE PAGE',
+            'Every turn you get an ELEMENTS table: the id, role and label of everything you can',
+            'act on. That is usually enough, and it is by far the fastest way to work.',
+        ];
+
+        if (vision.marks) {
+            seeing.push(
+                '',
+                'When a screenshot is attached it has a numbered badge drawn on each of those',
+                'elements. The badge number IS the elementId — read it off the badge.',
+                '- Only ever use a number that appears in the ELEMENTS table.',
+                '- Never guess a number, and never invent pixel coordinates.'
+            );
+        } else {
+            seeing.push('', 'When a screenshot is attached, still act only through elementIds.');
+        }
+
+        if (vision.sight === 'auto') {
+            seeing.push(
+                '',
+                'You will NOT get a screenshot every turn — looking is slow, and the element table',
+                'is usually enough. When the table genuinely does not tell you what you need — a',
+                'canvas, a chart, an image you must read, a layout you cannot infer — reply',
+                '{"action":"SEE","text":"why you need to look"} and the next turn will include one.',
+                'Do not use SEE out of habit. Every SEE makes the run several times slower.'
+            );
+        }
+
+        sections.push(seeing.join('\n'));
+    }
+
+    const limits: string[] = [
+        'LIMITS ON THIS RUN',
+        `- You have at most ${vision.maxSteps} actions and ${Math.round(vision.maxSeconds / 60)} minutes of working time.`,
+        '- If an action does not change the page, do not repeat it. Try something else or stop.',
+        '- If you are missing something only the user can give — a code, a preference, a decision —',
+        '  use ASK. The run pauses and resumes with their reply, so you keep everything you have',
+        '  done so far. Waiting does not spend your time budget. Prefer ASK over guessing.',
+        '- Use ANSWER only when the task is finished, or when you are blocked in a way the user',
+        '  cannot resolve by replying. ANSWER ends the run.',
+    ];
+
+    if (vision.allowlist.length) {
+        limits.push(`- You may only NAVIGATE to: ${vision.allowlist.join(', ')}.`);
+    }
+
+    limits.push(
+        vision.autonomy === 'autonomous'
+            ? '- Work through the whole task without checking in, except where a rule below stops you.'
+            : '- Before anything irreversible — sending, buying, deleting, submitting — use ASK with\n' +
+              '  expecting "confirmation" and wait for a yes. Do not proceed on your own judgement.'
+    );
+
+    limits.push(
+        '- Never type into or near a password field, and never fill card details the user did not give you.',
+        '- Never attempt a captcha or invent an OTP. Ask the user to read it out.'
+    );
+
+    sections.push(limits.join('\n'));
+
     if (toolBlocks.length) {
         const lines: string[] = ['TOOLS AVAILABLE TO YOU'];
 
@@ -742,6 +1044,29 @@ export function compileStack(stack: BlockStack, agentName: string): CompiledStac
                 lines.push(`  ${field.label}: ${value.trim()}`);
             }
 
+            if (spec.id === 'web-search') {
+                lines.push(
+                    '  Your training data stops well before today. For anything that can change —',
+                    '  prices, versions, availability, news, who holds a role — you MUST issue',
+                    '  {"action":"SEARCH","query":"..."} and wait for the results before you assert it.',
+                    '  Use {"action":"READ_URL","url":"..."} when a snippet is not enough to settle it.'
+                );
+                if (block.config.citations !== 'No') {
+                    lines.push(
+                        '  Every web-grounded claim in your final ANSWER must carry its source URL in',
+                        '  a "citations" array: [{"claim":"...","url":"..."}]. No citation, no claim.'
+                    );
+                }
+            }
+            if (spec.id === 'translate') {
+                const language = block.config.language || 'Assamese';
+                const code = LANGUAGE_CODES[language] ?? 'as';
+                lines.push(
+                    `  When the user asks for the page in ${language}, or in a language you cannot`,
+                    `  write yourself, return {"action":"TRANSLATE","language":"${code}"}.`,
+                    '  Do not translate the page by retyping it. The action does it in place.'
+                );
+            }
             if (spec.id === 'news-authenticity') {
                 lines.push(
                     '  Act as a fact-checking analyst. Judge the source against the criteria above, ' +
@@ -796,6 +1121,8 @@ export function compileStack(stack: BlockStack, agentName: string): CompiledStac
         );
     }
 
+    const searchBlock = toolBlocks.find((b) => b.toolId === 'web-search');
+
     return {
         systemPrompt: sections.join('\n\n'),
         model: modelBlock?.model ?? MODELS[0],
@@ -803,5 +1130,13 @@ export function compileStack(stack: BlockStack, agentName: string): CompiledStac
         memory: memoryBlock ? { recall: memoryBlock.recall, write: memoryBlock.write } : null,
         toolNames: toolBlocks.map((b) => getTool(b.toolId)?.name).filter((n): n is string => !!n),
         hasFileUpload: toolBlocks.some((b) => b.toolId === 'file-upload'),
+        vision,
+        search: searchBlock
+            ? {
+                  count: Number(searchBlock.config.count) || 5,
+                  freshness: FRESHNESS_CODES[searchBlock.config.freshness ?? ''] ?? null,
+                  citations: searchBlock.config.citations !== 'No',
+              }
+            : null,
     };
 }
