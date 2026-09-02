@@ -42,7 +42,10 @@ export interface ModelResult {
 export class ModelError extends Error {
     constructor(
         message: string,
-        readonly code: 'NO_KEY' | 'LOCAL_SERVER_DOWN' | 'UPSTREAM' | 'BAD_JSON'
+        readonly code: 'NO_KEY' | 'LOCAL_SERVER_DOWN' | 'UPSTREAM' | 'BAD_JSON',
+        /** What the model actually said. A BAD_JSON with no sample of the reply
+         *  is undiagnosable, which is how this failure stayed a mystery. */
+        readonly raw?: string
     ) {
         super(message);
         this.name = 'ModelError';
@@ -56,6 +59,14 @@ export class ModelError extends Error {
 function parseModelJson(text: string): Record<string, unknown> {
     let cleaned = text.trim();
 
+    // Qwen3 emits a reasoning trace when it is unsure, and the braces inside it
+    // were being picked up as the payload by the old outermost-brace slice.
+    cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    // Whatever <think> is left is unterminated: the model never reached an
+    // answer, so everything from there on is reasoning, not payload.
+    const dangling = cleaned.indexOf('<think>');
+    if (dangling !== -1) cleaned = cleaned.slice(0, dangling).trim();
+
     if (cleaned.startsWith('```')) {
         cleaned = cleaned
             .replace(/^```(?:json)?/i, '')
@@ -66,18 +77,70 @@ function parseModelJson(text: string): Record<string, unknown> {
     try {
         return JSON.parse(cleaned) as Record<string, unknown>;
     } catch {
-        // Fall back to the outermost braces, which survives a stray preamble.
-        const start = cleaned.indexOf('{');
-        const end = cleaned.lastIndexOf('}');
-        if (start !== -1 && end > start) {
-            try {
-                return JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
-            } catch {
-                /* fall through to the throw below */
+        /* fall through to the scan */
+    }
+
+    // Try every balanced region, not just the first: a reply can open with prose
+    // containing braces ("the set {a, b} is irrelevant") and only then give the
+    // action, and `{a, b}` is balanced without being JSON.
+    for (const candidate of jsonCandidates(cleaned)) {
+        try {
+            return JSON.parse(candidate) as Record<string, unknown>;
+        } catch {
+            /* try the next region */
+        }
+    }
+
+    throw new ModelError('The model did not return usable JSON.', 'BAD_JSON', text);
+}
+
+/** How many balanced regions we will try before calling a reply hopeless. */
+const MAX_JSON_CANDIDATES = 20;
+
+/**
+ * Every balanced `{...}` region in a string, outermost first, respecting strings
+ * and escapes.
+ *
+ * Replaces an `indexOf('{')` / `lastIndexOf('}')` slice, which fails on three
+ * things this model really produces: prose or reasoning containing braces, where
+ * the slice spans far too much; a truncated reply whose closing brace never
+ * arrives, where the slice ends on a brace belonging to something else; and a
+ * reply whose first brace opens something that is not JSON at all.
+ */
+function jsonCandidates(text: string): string[] {
+    const found: string[] = [];
+    let depth = 0;
+    let start = -1;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (ch === '\\') escaped = true;
+            else if (ch === '"') inString = false;
+            continue;
+        }
+
+        if (ch === '"') inString = true;
+        else if (ch === '{') {
+            if (depth === 0) start = i;
+            depth++;
+        } else if (ch === '}') {
+            depth--;
+            if (depth === 0 && start !== -1) {
+                found.push(text.slice(start, i + 1));
+                if (found.length >= MAX_JSON_CANDIDATES) break;
+                start = -1;
+            } else if (depth < 0) {
+                depth = 0; // a stray closer before any opener
             }
         }
-        throw new ModelError('The model did not return usable JSON.', 'BAD_JSON');
     }
+
+    return found;
 }
 
 /* ------------------------------------------------------- openai-compatible -- */

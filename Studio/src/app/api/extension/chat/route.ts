@@ -301,6 +301,58 @@ ${
 COMMAND: ${command}`;
 }
 
+/**
+ * One action turn, with a single repair attempt when the reply will not parse.
+ *
+ * model.md §4 lists `VALIDATION_FAILED` as firing when "response fails
+ * validation twice", but nothing ever retried: the first unparseable reply ended
+ * the run and surfaced the raw parser error to the user. A vision model asked for
+ * strict JSON drops out of format occasionally, and almost always recovers when
+ * told so — one retry turns a dead run into a completed one.
+ *
+ * The retry is deliberately not a third: two failures in a row is a real problem
+ * with the prompt or the tier, not a blip, and looping on it burns the budget the
+ * user is paying for.
+ */
+async function runTurnWithRepair(
+    systemPrompt: string,
+    working: AgentMessage[],
+    runtime: AgentRuntime
+) {
+    try {
+        return await runModel({
+            systemPrompt,
+            messages: working,
+            model: runtime.model,
+            temperature: runtime.temperature,
+            geminiKey: runtime.geminiKey,
+        });
+    } catch (error) {
+        if (!(error instanceof ModelError) || error.code !== 'BAD_JSON') throw error;
+
+        // The only record of what went wrong. Truncated, because the reply can
+        // carry page text and this lands in server logs.
+        console.warn('[chat] unparseable model reply, retrying once:', (error.raw ?? '').slice(0, 400));
+
+        return await runModel({
+            systemPrompt,
+            messages: [
+                ...working,
+                {
+                    role: 'user',
+                    content:
+                        'Your last reply was not valid JSON. Reply with one JSON object and ' +
+                        'nothing else — no explanation, no markdown fence, no reasoning. ' +
+                        'Example: {"action":"CLICK","elementId":12}',
+                },
+            ],
+            model: runtime.model,
+            temperature: runtime.temperature,
+            geminiKey: runtime.geminiKey,
+        });
+    }
+}
+
 export async function POST(req: NextRequest) {
     const origin = req.headers.get('origin');
 
@@ -440,13 +492,7 @@ export async function POST(req: NextRequest) {
         let usedSearch = false;
 
         for (let hop = 0; hop <= MAX_RESEARCH_HOPS; hop++) {
-            const result = await runModel({
-                systemPrompt,
-                messages: working,
-                model: runtime.model,
-                temperature: runtime.temperature,
-                geminiKey: runtime.geminiKey,
-            });
+            const result = await runTurnWithRepair(systemPrompt, working, runtime);
 
             payload = result.payload;
             const action = String(payload.action ?? '').toUpperCase();

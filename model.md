@@ -368,7 +368,7 @@ maxSteps 25 · maxWallClock 5 min · maxConsecutiveErrors 3 · actionTimeout 10 
 | Error streak | 3 failed actions in a row | `CONSECUTIVE_ERRORS` |
 | Action timeout | 10 s with no DOM settle | `ACTION_TIMEOUT` |
 | Bad element | id not in the current element set | `ELEMENT_NOT_FOUND` |
-| Schema | response fails validation twice | `VALIDATION_FAILED` |
+| Schema | reply unparseable, then unparseable again after one repair turn | `VALIDATION_FAILED` |
 | Domain | navigation outside the allowlist | `BLOCKED_DOMAIN` |
 | No answer | a suspended run waited 20 min unanswered (§5) | `INPUT_TIMEOUT` |
 
@@ -380,6 +380,25 @@ content script refuses a `CLICK` or `TYPE` whose *target* is a password or
 card-number field, and that refusal comes back as a normal action error the model
 must work around. Page-level sensitivity is passed to the model as context, not as
 a kill switch.
+
+**An unparseable reply gets one repair turn.** This row was aspirational until now: nothing
+retried, so the *first* reply that would not parse ended the run and surfaced the raw parser
+message — *"The model did not return usable JSON"* — as the agent's answer. A vision model held to
+strict JSON drops format occasionally and almost always recovers when told so, and one retry turns
+a dead run into a completed one. Deliberately not a second: two in a row is the prompt or the tier,
+not a blip, and looping on it spends a budget the user is paying for.
+
+The parser was also doing less than it could. It sliced from the first `{` to the last `}`, which
+breaks on three replies this model really produces — a `<think>` trace whose braces get read as the
+payload, a truncated reply whose closing brace never arrives, and prose that opens with braces of
+its own (*"the set {a, b} is irrelevant"*). It now strips reasoning traces and walks the string
+brace-by-brace, string- and escape-aware, trying every balanced region until one parses.
+`eval/json-parse.test.mjs` covers 13 shapes, including the three that must still be **rejected** so
+they reach the repair turn rather than becoming a confidently wrong action.
+
+`ModelError` now carries the raw reply, and a failed parse logs a truncated sample server-side.
+Without it the failure was undiagnosable, which is exactly how it survived this long: the error
+threw away the only evidence of what the model had said.
 
 **The state hash is the important one.** Nearly every real agent deadlock is *"the page didn't
 change and the model tried the same thing again."* A step budget alone burns all 25 steps

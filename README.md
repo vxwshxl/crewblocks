@@ -501,6 +501,18 @@ node eval/routing.test.mjs
 | User named an unknown site | a bare name never becoming a host |
 | `search` / `video` with a query | an unencoded query string |
 
+And model reply parsing, which decides whether a run survives an off-format turn:
+
+```bash
+node eval/json-parse.test.mjs
+```
+
+| Case | Guards against |
+|---|---|
+| `<think>` trace before the action | reasoning braces being read as the payload |
+| Prose containing braces | slicing from the first `{` to the last `}` |
+| Truncated mid-string | a half-JSON reply becoming a confidently wrong action |
+
 Each fixture declares its own expectations in a JSON block — which labels must reach the model,
 with which `kind`, and which junk must not. Adding a case is one HTML file in `eval/fixtures/`.
 
