@@ -17,62 +17,48 @@ export async function POST(req: NextRequest) {
         }
 
         const targetLang = targetLanguage || 'as';
-        const translatedTexts: string[] = [];
-        const BATCH_SIZE = 50; // max inputs per API call to avoid 413 Payload Too Large
 
-        for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-            const batch = texts.slice(i, i + BATCH_SIZE);
-            const payloadInputs = batch.map((text: string) => ({ source: text }));
+        // 50 inputs per call keeps the payload under Bhashini's 413 limit.
+        const BATCH_SIZE = 50;
+        // Batches in flight at once. The batches were always there; running them
+        // one after another was the cost — a 900-node page is 18 round trips to a
+        // remote API, serialised, which is where the wait came from. Six is a
+        // pool rather than an unbounded Promise.all: firing eighteen requests at
+        // a government endpoint earns a 429, not a speed-up.
+        const CONCURRENCY = 6;
 
-            const payload = {
-                pipelineTasks: [
-                    {
-                        taskType: "translation",
-                        config: {
-                            language: {
-                                sourceLanguage: "en",
-                                targetLanguage: targetLang
-                            }
-                        }
-                    }
-                ],
-                inputData: {
-                    input: payloadInputs
-                }
-            };
+        // Indexed writes, not pushes. A batch that comes back short used to shift
+        // every later translation onto the wrong node for the rest of the page.
+        const translatedTexts: string[] = new Array(texts.length);
 
+        const offsets: number[] = [];
+        for (let i = 0; i < texts.length; i += BATCH_SIZE) offsets.push(i);
+
+        const runBatch = async (offset: number) => {
+            const batch: string[] = texts.slice(offset, offset + BATCH_SIZE);
             try {
-                const response = await fetch(BHASHINI_ENDPOINT, {
-                    method: 'POST',
-                    headers: {
-                        "Authorization": BHASHINI_KEY,
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify(payload)
-                });
-
-                if (!response.ok) {
-                    const errText = await response.text();
-                    throw new Error(`HTTP error! status: ${response.status} msg: ${errText}`);
+                const outputs = await translateBatch(batch, targetLang);
+                for (let j = 0; j < batch.length; j++) {
+                    translatedTexts[offset + j] = outputs[j] ?? batch[j];
                 }
-
-                const data = await response.json();
-
-                if (data.pipelineResponse && data.pipelineResponse[0] && data.pipelineResponse[0].output) {
-                    const outputs = data.pipelineResponse[0].output;
-                    outputs.forEach((outItem: { target?: string }) => {
-                        translatedTexts.push(outItem.target ?? '');
-                    });
-                } else {
-                    throw new Error("Invalid response missing output array");
-                }
-
             } catch (error) {
-                console.error("Bhashini API Error:", error);
-                // Fallback: if a batch fails, push original texts to keep array alignment
-                batch.forEach((text: string) => translatedTexts.push(text));
+                console.error('Bhashini API Error:', error);
+                // Alignment matters more than completeness: an untranslated
+                // string in the right place beats a translated one in the wrong.
+                for (let j = 0; j < batch.length; j++) {
+                    translatedTexts[offset + j] = batch[j];
+                }
             }
-        }
+        };
+
+        let cursor = 0;
+        await Promise.all(
+            Array.from({ length: Math.min(CONCURRENCY, offsets.length) }, async () => {
+                while (cursor < offsets.length) {
+                    await runBatch(offsets[cursor++]);
+                }
+            })
+        );
 
         if (!translatedTexts || translatedTexts.length === 0) {
             throw new Error("Translation failed");
@@ -89,6 +75,38 @@ export async function POST(req: NextRequest) {
             origin
         );
     }
+}
+
+/** One Bhashini pipeline call. Returns the translations in input order. */
+async function translateBatch(batch: string[], targetLang: string): Promise<string[]> {
+    const response = await fetch(BHASHINI_ENDPOINT, {
+        method: 'POST',
+        headers: {
+            Authorization: BHASHINI_KEY,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            pipelineTasks: [
+                {
+                    taskType: 'translation',
+                    config: {
+                        language: { sourceLanguage: 'en', targetLanguage: targetLang },
+                    },
+                },
+            ],
+            inputData: { input: batch.map((text) => ({ source: text })) },
+        }),
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+
+    const data = await response.json();
+    const output = data?.pipelineResponse?.[0]?.output;
+    if (!Array.isArray(output)) throw new Error('Invalid response, missing output array');
+
+    return output.map((item: { target?: string }) => item.target ?? '');
 }
 
 /** The side panel is a chrome-extension:// origin, so it needs these to read a reply. */

@@ -311,6 +311,45 @@ one people forget.
 
 ---
 
+## 3.1 Translation
+
+Translation does **not** go through Qwen3-VL or any other LLM. It calls **Bhashini** — the
+Government of India's Dhruva NMT pipeline at `dhruva-api.bhashini.gov.in` — because for
+Assamese, Bodo, Bengali and Hindi it is both the better translator and the one an Indian public
+deployment should be using. The model tiers in §1 have nothing to do with it.
+
+So "run translation on cloud instead" was never the lever: it was always a remote cloud API. The
+latency was ours.
+
+**What was actually slow.** Text nodes are chunked 50 to a request to stay under Bhashini's 413
+limit, which was right. Those chunks then ran one after another in a `for` loop with an `await`
+inside it, so a 900-node page was 18 sequential round trips to a remote API and the user waited for
+all of them end to end.
+
+The chunks now run through a **pool of 6**. Not an unbounded `Promise.all`: firing eighteen
+requests at a government endpoint earns a 429, not a speed-up.
+
+| 300 nodes → Hindi, 6 batches | Wall clock |
+|---|---|
+| Serial (before) | 19.5 s |
+| Pooled, 6 in flight (after) | 3.4 s |
+| | **5.8×** |
+
+*Distinct corpora per run and the pooled run measured first, because an identical payload comes
+back from Bhashini's cache in 0.4 s and would have reported a fictional 44×.*
+
+**Two correctness bugs fixed in the same pass.** Results were `push`ed in completion order, so a
+batch that came back short shifted every later translation onto the wrong node for the rest of the
+page — they are written into indexed slots now, and a failed batch backfills with the original
+English so alignment survives. And `performTranslation` called `replacePageTextNodes` twice with
+the same array, rewriting the whole page a second time and posting "Translation complete" twice.
+
+**Still open:** results arrive as one array at the end, so the page changes all at once. Streaming
+each batch to the content script as it lands would make the first text change in ~600 ms instead of
+3.4 s. Worth doing only if 3.4 s still reads as slow.
+
+---
+
 ## 4. The agent loop
 
 Replaces the unbounded `while (isAgentRunning && !userRequestedStop)` in `sidebar.js`, which had a
@@ -377,37 +416,63 @@ page read, and it is the only place in the system that decides *"is this a job a
 |---|---|---|
 | `{"kind":"chat","text":…}` | conversation | answered in the panel, no run |
 | `{"kind":"task"}` | the job belongs to this page | loop runs in place |
-| `{"kind":"task","startUrl":…}` | the job needs a different site | opens a **new tab**, loop runs there |
+| `{"kind":"task","needs":…}` | the job needs a different site | opens a **new tab**, loop runs there |
 
 Deciding here rather than in the loop matters: by the time the loop runs, the model is looking at a
 table of buttons that all belong to the wrong site, and its job is to pick one of them. Triage sees
 no elements at all, so there is nothing to be tempted by.
 
-**Measured** on `qwen/qwen3-vl-8b-instruct`, temperature 0, eight cases against a GitHub repo,
-WhatsApp Web and Gmail:
+### The model names a capability, not a URL
+
+The obvious version of this puts a table of sites in the triage prompt — *email goes to Gmail,
+shopping goes to Amazon*. That was the first cut and it is wrong for three reasons.
+
+1. **The prompt runs on every single message.** A site registry is paid for on every greeting, and
+   costs the most on the tier with the least headroom.
+2. **A model that emits a URL can invent one.** The first draft produced
+   `github.com/vxwshxl/crewblocks/stargazers` for *"star this repo"* — right site, invented path.
+3. **A prompt cannot see the browser.** It has no idea whether this user reads mail in Gmail,
+   Outlook or Proton.
+
+So the model names a **capability** from a closed set — `email chat shop search video maps calendar
+docs social code` — optionally with a `site` the user said out loud and a `query`. The route
+validates against that set and throws away anything else. `CAPABILITY_SITES` in `sidebar.js` then
+resolves it, in order:
+
+1. a site the user named in their own message (*"order it on flipkart"*)
+2. **a site they already have open** — that is the one they use and the one they are signed in to
+3. the built-in entry for the capability
+
+Step 2 is the one a prompt cannot do, and it is free: no new permission, since `<all_urls>` already
+grants tab URLs. Open Outlook and *"mail sam the update"* goes to Outlook.
+
+**Measured** on `qwen/qwen3-vl-8b-instruct`, temperature 0:
 
 | | Result |
 |---|---|
-| Model verdict correct | 7 / 8 |
-| Correct after the same-host guard | **8 / 8** |
+| Capability named correctly, 10 cases | **10 / 10** |
+| Resolver, 11 cases incl. open-tab preference | **11 / 11** (`eval/routing.test.mjs`) |
 
-The single miss was *"star this repo"* on GitHub, which came back with
-`startUrl: …/stargazers` — right site, pointless tab. The side panel drops any `startUrl` whose
-host matches the current page, so the run correctly stays in place. That guard also absorbs the
-common case of the model naming the site the user is already on.
+*"star this repo"* still emits a stray `site` — `"github.com/vxwshxl/crewblocks"` — and two code
+guards independently neutralise it: the route's hostname regex rejects anything with a `/`, and the
+panel drops a resolved URL whose host matches the page already open. The run correctly stays in
+place.
 
 **Three things are enforced in code, not asked for in the prompt:**
 
-- **Scheme.** `safeStartUrl` in the route accepts only `http:`/`https:`. A model-supplied string
-  becomes a real navigation in the user's browser; `javascript:` must never reach
-  `chrome.tabs.create`, and a hallucinated fragment must fail as a rejected URL rather than as a
-  page load.
+- **Vocabulary.** `safeRouting` accepts only the ten known capabilities and a hostname-shaped
+  `site`. Nothing carrying a scheme, a path or a credential survives the route.
 - **Allowlist.** `openTaskTab` runs the same `hostAllowed` check the in-loop `NAVIGATE` runs.
   Without it, triage would be a way around the user's own domain limits.
 - **Tab ownership.** The run pins itself to the tab it opened (`runTabId`, honoured inside
   `getActiveTab`). The tab opens active so the work is visible, but if the user clicks back to what
   they were reading, the agent keeps operating on its own tab instead of following them onto an
   unrelated page and acting on it. The pin releases in `clearRun`; the tab stays open.
+
+**Not taken:** `history` and `topSites` would sharpen step 2 — they know the mail client the user
+uses even when it is closed. Both are permission escalations on a project that advertises privacy
+tiers (§8), and open tabs already cover the case, so they stay unrequested until there is evidence
+they are needed.
 
 **Also fixed, same failure:** protocol rule 9 now bounds `ASK`. Anything already stated in the
 request — a recipient, an address, a quantity, a name — is the model's to use. *"Please provide

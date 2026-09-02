@@ -180,8 +180,11 @@ flowchart LR
 1. A content script runs in **every frame** and indexes that frame's interactable elements.
 2. The side panel enumerates frames, merges their elements into one id space, ranks them and caps
    the table — see [Perception](#how-the-agent-sees-a-page).
-3. On a new message it first asks the route to **triage**: conversation, or a browser task? Only a
-   task starts a run.
+3. On a new message it first asks the route to **triage**: conversation, or a browser task — and
+   if a task, which **capability** it needs (`email`, `shop`, `search`, …). Only a task starts a
+   run, and a task whose capability the current page cannot serve opens a **new tab** first, so
+   the page the user was reading is left alone. The capability is resolved to a real site in the
+   panel, preferring sites the user already has open.
 4. It posts the page context to `/api/extension/chat`. The route loads the agent's stack from
    Supabase, compiles it to a system prompt, and calls the tier the Model block selects.
 5. `SEARCH` and `READ_URL` are resolved server-side and fed back to the model, so the panel only
@@ -400,12 +403,12 @@ All extension routes require an authenticated Supabase session and return `401` 
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/api/extension/chat` | Compiles the agent's stack, runs one turn, returns one action as JSON |
-| `POST` | `/api/extension/chat` + `mode: "triage"` | Cheap text-only turn: is this a browser task or just conversation? |
+| `POST` | `/api/extension/chat` + `mode: "triage"` | Cheap text-only turn: browser task or conversation, and which capability it needs |
 | `GET` | `/api/extension/models` | Lists agents owned by the user and shared via squads |
 | `GET` | `/api/extension/history` | Returns up to 100 messages for an agent, oldest first |
 | `DELETE` | `/api/extension/history` | Clears an agent's transcript and memory |
 | `GET` | `/api/extension/memory` | Returns the most recent memories for an agent |
-| `POST` | `/api/extension/translate` | Translates text nodes via Bhashini, batched 50 per call |
+| `POST` | `/api/extension/translate` | Translates text nodes via Bhashini, 50 per call, 6 calls in flight |
 | `POST` | `/api/chat` | Provider-agnostic chat proxy — Gemini, OpenAI, or Anthropic |
 
 ---
@@ -483,6 +486,20 @@ pass against code the extension does not run.
 | Gmail — compose and send | the Send button falling off the end of the element budget |
 | Amazon — search from the box | typing and clicking being indistinguishable |
 | Cookie banner covering the page | offering controls that are painted over |
+
+Capability routing has its own runner, same principle — it extracts `resolveCapability` out of the
+shipped `sidebar.js` rather than importing a copy:
+
+```bash
+node eval/routing.test.mjs
+```
+
+| Case | Guards against |
+|---|---|
+| No mail tab open | a capability with no default |
+| Outlook open, Gmail not | assuming everyone uses Gmail |
+| User named an unknown site | a bare name never becoming a host |
+| `search` / `video` with a query | an unencoded query string |
 
 Each fixture declares its own expectations in a JSON block — which labels must reach the model,
 with which `kind`, and which junk must not. Adding a case is one HTML file in `eval/fixtures/`.

@@ -615,10 +615,6 @@ async function performTranslation(targetLang, langName) {
             addMessage("Translation complete. Updating the page in-place...", "ai", "translation-success");
             await replacePageTextNodes(data.translated_texts);
 
-            // Notify content script about updated translation state
-            addMessage("Translation complete. Updating the page in-place...", "ai", "success");
-            await replacePageTextNodes(data.translated_texts);
-
             setTimeout(async () => {
                 const tab = await getActiveTab();
                 if (tab) {
@@ -834,8 +830,13 @@ async function triageMessage(text) {
             return { kind: 'chat' };
         }
 
-        // Already on it: opening a second tab for the same page helps nobody.
-        let startUrl = data.startUrl || null;
+        // The model named a capability, not a place. Turn it into one here,
+        // where the user's own open tabs are visible.
+        let startUrl = data.needs
+            ? await resolveCapability(data.needs, data.site || null, data.query || null)
+            : null;
+
+        // Already on it: opening a second tab for the same site helps nobody.
         if (startUrl && url) {
             try {
                 if (new URL(startUrl).hostname === new URL(url).hostname) startUrl = null;
@@ -1981,6 +1982,142 @@ async function waitForNewTabReady(tabId, timeoutMs = 12000) {
         await delay(250);
     }
     return true;
+}
+
+/**
+ * What each capability looks like in the wild.
+ *
+ * Keys are matched against the hosts of the user's open tabs, so the order
+ * inside `entries` is only the tiebreak when nothing is open. Values are the URL
+ * that lands closest to the job on that particular site.
+ *
+ * This lives in code rather than in the triage prompt on purpose. The prompt runs
+ * on every single message, so a table of sites is paid for on every message and
+ * costs the most on the tier with the least headroom. More importantly a model
+ * that never emits a URL cannot invent one, and only code can look at the browser
+ * to see which of these the user actually uses.
+ */
+const CAPABILITY_SITES = {
+    email: {
+        entries: {
+            'mail.google.com': 'https://mail.google.com/mail/u/0/#inbox?compose=new',
+            'outlook.live.com': 'https://outlook.live.com/mail/0/',
+            'outlook.office.com': 'https://outlook.office.com/mail/',
+            'mail.proton.me': 'https://mail.proton.me/u/0/inbox',
+            'mail.yahoo.com': 'https://mail.yahoo.com/',
+            'mail.zoho.com': 'https://mail.zoho.com/'
+        }
+    },
+    chat: {
+        entries: {
+            'web.whatsapp.com': 'https://web.whatsapp.com/',
+            'web.telegram.org': 'https://web.telegram.org/',
+            'app.slack.com': 'https://app.slack.com/',
+            'discord.com': 'https://discord.com/channels/@me',
+            'messenger.com': 'https://www.messenger.com/'
+        }
+    },
+    shop: {
+        entries: {
+            'amazon.in': 'https://www.amazon.in/',
+            'amazon.com': 'https://www.amazon.com/',
+            'flipkart.com': 'https://www.flipkart.com/',
+            'myntra.com': 'https://www.myntra.com/',
+            'meesho.com': 'https://www.meesho.com/',
+            'ebay.com': 'https://www.ebay.com/'
+        }
+    },
+    search: {
+        entries: {
+            'google.com': 'https://www.google.com/search?q=',
+            'duckduckgo.com': 'https://duckduckgo.com/?q=',
+            'bing.com': 'https://www.bing.com/search?q='
+        },
+        takesQuery: true
+    },
+    video: {
+        entries: { 'youtube.com': 'https://www.youtube.com/results?search_query=' },
+        takesQuery: true
+    },
+    maps: {
+        entries: { 'google.com/maps': 'https://www.google.com/maps', 'openstreetmap.org': 'https://www.openstreetmap.org/' }
+    },
+    calendar: {
+        entries: { 'calendar.google.com': 'https://calendar.google.com/', 'outlook.live.com': 'https://outlook.live.com/calendar/' }
+    },
+    docs: {
+        entries: { 'docs.google.com': 'https://docs.google.com/', 'notion.so': 'https://www.notion.so/', 'sheets.google.com': 'https://sheets.google.com/' }
+    },
+    social: {
+        entries: { 'x.com': 'https://x.com/', 'linkedin.com': 'https://www.linkedin.com/', 'instagram.com': 'https://www.instagram.com/', 'facebook.com': 'https://www.facebook.com/' }
+    },
+    code: {
+        entries: { 'github.com': 'https://github.com/', 'gitlab.com': 'https://gitlab.com/' }
+    }
+};
+
+/** Hosts of every tab currently open, most recently used first. */
+async function openTabHosts() {
+    try {
+        const tabs = await chrome.tabs.query({});
+        return tabs
+            .map((tab) => {
+                try {
+                    return { host: new URL(tab.url).hostname.toLowerCase(), lastAccessed: tab.lastAccessed || 0 };
+                } catch (e) {
+                    return null; // chrome:// and friends have no useful host
+                }
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.lastAccessed - a.lastAccessed)
+            .map((t) => t.host);
+    } catch (e) {
+        console.warn('Could not read open tabs:', e.message);
+        return [];
+    }
+}
+
+/**
+ * Turns the capability the model named into a real URL, without the model ever
+ * having seen a list of sites.
+ *
+ * Preference order:
+ *   1. a site the user named in their own message ("order it on flipkart")
+ *   2. a site they already have open — that is the one they use, and the one
+ *      they are signed in to, which matters more than any default
+ *   3. the built-in entry for that capability
+ *
+ * Returns null when the capability is unknown, which means "work in place".
+ */
+async function resolveCapability(needs, site, query) {
+    const spec = CAPABILITY_SITES[needs];
+    if (!spec) return null;
+
+    const hosts = await openTabHosts();
+    const entries = Object.keys(spec.entries);
+    const withQuery = (url) =>
+        spec.takesQuery && query ? url + encodeURIComponent(query) : url;
+
+    // 1. The user named a site. Honour it even when it is not one we know.
+    if (site) {
+        const known = entries.find((host) => host.includes(site));
+        if (known) return withQuery(spec.entries[known]);
+
+        const open = hosts.find((host) => host.includes(site));
+        if (open) return `https://${open}/`;
+
+        // A bare name like "flipkart" is not a host yet.
+        return site.includes('.') ? `https://${site}/` : `https://www.${site}.com/`;
+    }
+
+    // 2. A site they already have open wins over any default we could pick.
+    for (const host of hosts) {
+        const match = entries.find((entry) => host.includes(entry.split('/')[0]));
+        if (match) return withQuery(spec.entries[match]);
+    }
+
+    // 3. Fall back to the first entry, which is the ordering's job.
+    return withQuery(spec.entries[entries[0]]);
 }
 
 /**

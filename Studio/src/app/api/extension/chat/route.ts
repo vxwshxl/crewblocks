@@ -125,23 +125,26 @@ Respond ONLY in valid JSON, in one of these three shapes:
     The user wants something done TO THE PAGE ABOVE: summarise it, translate it,
     fill this form, click something on it, pull data out of it.
 
-{"kind":"task","startUrl":"https://..."}
-    The user wants something done that the page above cannot do. Give the URL
-    where the work actually starts. It opens in a NEW TAB, so the user keeps
-    whatever they were reading.
+{"kind":"task","needs":"<capability>"}
+    The user wants something done that the page above cannot do. Name the
+    CAPABILITY the job needs. Do NOT write a URL — CrewAgent picks the site,
+    using the ones this user actually has open and signed in to.
+      email     send or read mail
+      chat      message a person
+      shop      buy, order, or price something
+      search    look something up on the web
+      video     find or watch a video
+      maps      directions, a place, a route
+      calendar  an event or a meeting
+      docs      a document, a note, a spreadsheet
+      social    post to or read a feed
+      code      a repository, an issue, a pull request
+    Add "site" if the user named one: "order it on flipkart" -> "site":"flipkart".
+    Add "query" for search and video: just the words to look up.
 
-The user is usually just standing wherever they happened to be. A task that
-names a service, a destination, or an errand almost always needs a startUrl —
-being on a page is not a reason to believe the job belongs to it.
-
-Land as close to the job as you are sure of:
-  email / mail someone      -> https://mail.google.com/mail/u/0/#inbox?compose=new
-  message someone           -> https://web.whatsapp.com/
-  buy / order / find a product -> https://www.amazon.in/
-  look something up         -> https://www.google.com/search?q=URL+ENCODED+QUERY
-  watch / find a video      -> https://www.youtube.com/results?search_query=URL+ENCODED+QUERY
-Otherwise use the site's plain homepage. Never invent a deep link you are not
-sure of: a homepage the agent can navigate from beats a 404 it cannot.
+The user is usually just standing wherever they happened to be. A task that names
+a service, a destination, or an errand almost always needs a capability — being on
+a page is not a reason to believe the job belongs to it.
 
 Examples, given the page above:
 "hi"                                -> {"kind":"chat","text":"Hi! What would you like me to do?"}
@@ -150,30 +153,54 @@ Examples, given the page above:
 "summarise this page"               -> {"kind":"task"}
 "fill this form"                    -> {"kind":"task"}
 "star this repo"                    -> {"kind":"task"}
-"mail sam@example.com the update"   -> {"kind":"task","startUrl":"https://mail.google.com/mail/u/0/#inbox?compose=new"}
-"tell priya on whatsapp im late"    -> {"kind":"task","startUrl":"https://web.whatsapp.com/"}
-"order dog food"                    -> {"kind":"task","startUrl":"https://www.amazon.in/"}
+"mail sam@example.com the update"   -> {"kind":"task","needs":"email"}
+"tell priya on whatsapp im late"    -> {"kind":"task","needs":"chat"}
+"order dog food"                    -> {"kind":"task","needs":"shop"}
+"get me headphones on flipkart"     -> {"kind":"task","needs":"shop","site":"flipkart"}
+"who won the match last night"      -> {"kind":"task","needs":"search","query":"match result last night"}
 
 Unsure whether it is chat or a task? Choose "task".
-Unsure whether the current page can do the job? Give a startUrl.
+Unsure whether the current page can do the job? Name a capability.
 
 Respond in valid JSON only:`;
 }
 
 /**
- * A model-supplied URL is about to be opened in the user's own browser, so only
- * http(s) survives. `javascript:` and `data:` must never reach chrome.tabs.create,
- * and a hallucinated fragment like "a" must fail here rather than as a navigation.
+ * The capabilities triage may name. A closed set, because the side panel maps
+ * these onto real sites — anything outside it means "work in place", which is
+ * the safe answer.
  */
-function safeStartUrl(value: unknown): string | null {
-    if (typeof value !== 'string' || !value.trim()) return null;
-    try {
-        const parsed = new URL(value.trim());
-        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
-        return parsed.toString();
-    } catch {
-        return null;
-    }
+const CAPABILITIES = new Set([
+    'email', 'chat', 'shop', 'search', 'video',
+    'maps', 'calendar', 'docs', 'social', 'code',
+]);
+
+/**
+ * The routing half of a triage verdict.
+ *
+ * The model names a capability; it never names a URL. That is the whole point of
+ * the split: a URL it invents becomes a real navigation in the user's browser,
+ * whereas an unrecognised capability is simply dropped here. The side panel does
+ * the resolving, because only it can see which sites the user actually uses.
+ */
+function safeRouting(payload: Record<string, unknown>): {
+    needs: string | null;
+    site: string | null;
+    query: string | null;
+} {
+    const rawNeeds = typeof payload.needs === 'string' ? payload.needs.trim().toLowerCase() : '';
+    const needs = CAPABILITIES.has(rawNeeds) ? rawNeeds : null;
+    if (!needs) return { needs: null, site: null, query: null };
+
+    // A site name, not a URL: hostname characters only, so nothing that reaches
+    // the panel can carry a scheme, a path, or a credential.
+    const rawSite = typeof payload.site === 'string' ? payload.site.trim().toLowerCase() : '';
+    const site = /^[a-z0-9][a-z0-9.-]{0,60}$/.test(rawSite) ? rawSite : null;
+
+    const rawQuery = typeof payload.query === 'string' ? payload.query.trim() : '';
+    const query = rawQuery ? rawQuery.slice(0, 300) : null;
+
+    return { needs, site, query };
 }
 
 /** How many SEARCH/READ_URL turns we resolve before forcing a real answer. */
@@ -309,12 +336,16 @@ export async function POST(req: NextRequest) {
                     geminiKey: runtime.geminiKey,
                 });
                 const kind = String(verdict.payload.kind ?? 'task').toLowerCase();
+                // Only meaningful on a task; a chat reply never opens a tab.
+                const routing =
+                    kind === 'chat'
+                        ? { needs: null, site: null, query: null }
+                        : safeRouting(verdict.payload);
                 return corsHeaders(
                     NextResponse.json({
                         kind: kind === 'chat' ? 'chat' : 'task',
                         text: typeof verdict.payload.text === 'string' ? verdict.payload.text : '',
-                        // Only meaningful on a task; a chat reply never opens a tab.
-                        startUrl: kind === 'chat' ? null : safeStartUrl(verdict.payload.startUrl),
+                        ...routing,
                     }),
                     origin
                 );
@@ -322,7 +353,7 @@ export async function POST(req: NextRequest) {
                 // Never let triage block real work — fall through to the run,
                 // on the page the user is already on.
                 return corsHeaders(
-                    NextResponse.json({ kind: 'task', text: '', startUrl: null }),
+                    NextResponse.json({ kind: 'task', text: '', needs: null, site: null, query: null }),
                     origin
                 );
             }
