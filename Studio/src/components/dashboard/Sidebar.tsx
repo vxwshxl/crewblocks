@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Blocks, Key, BookOpen, ShoppingCart, Settings, Users, Tag } from 'lucide-react';
+import { Blocks, Key, Settings } from 'lucide-react';
 
 export type TabType = 'agents' | 'apikeys' | 'squads' | 'marketplace' | 'pricings' | 'tutorials' | 'settings';
 
@@ -26,11 +26,7 @@ export default function Sidebar({ activeTab, onTabChange }: SidebarProps) {
                 {[
                     { id: 'agents', label: 'Agents', icon: Blocks },
                     { id: 'apikeys', label: 'API Keys', icon: Key },
-                    { id: 'squads', label: 'Squads', icon: Users },
                     { type: 'divider' },
-                    { id: 'marketplace', label: 'Marketplace', icon: ShoppingCart },
-                    { id: 'pricings', label: 'Pricing', icon: Tag },
-                    { id: 'tutorials', label: 'Tutorials', icon: BookOpen },
                     { id: 'settings', label: 'Profile Settings', icon: Settings },
                 ].map((item, idx) => {
                     if ('type' in item && item.type === 'divider') {
