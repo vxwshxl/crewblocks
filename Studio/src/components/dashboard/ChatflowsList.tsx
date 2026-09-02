@@ -220,7 +220,7 @@ export default function ChatflowsList() {
                     </p>
                     <button
                         onClick={handleCreateNew}
-                        className="flex items-center gap-2 bg-primary text-primary-foreground h-11 px-6 rounded-full text-sm font-bold hover:bg-[#A6E63F] transition-all shadow-sm mx-auto"
+                        className="flex items-center gap-2 bg-[#8C52FE] text-white h-11 px-6 rounded-full text-sm font-bold shadow-sm mx-auto"
                     >
                         <Plus className="w-4 h-4" /> Create an agent
                     </button>

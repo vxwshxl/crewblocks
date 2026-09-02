@@ -247,7 +247,7 @@ export default function SquadDetailsModal({ isOpen, squadId, onClose, onJoin }: 
                                         {currentUser?.id === squad.owner_id ? 'Delete Squad' : 'Leave Squad'}
                                     </button>
                                 ) : (
-                                    <button onClick={handleJoinSquad} disabled={isActionLoading} className="text-xs font-bold px-4 py-2 mt-2 bg-primary text-primary-foreground hover:bg-[#A6E63F] transition-colors rounded-full shadow-lg shadow-primary/10 tracking-tight disabled:opacity-60 disabled:cursor-not-allowed">
+                                    <button onClick={handleJoinSquad} disabled={isActionLoading} className="text-xs font-bold px-4 py-2 mt-2 bg-primary text-primary-foreground hover:bg-[#9d6bff] transition-colors rounded-full shadow-lg shadow-primary/10 tracking-tight disabled:opacity-60 disabled:cursor-not-allowed">
                                         {isActionLoading ? 'Joining...' : 'Join Squad'}
                                     </button>
                                 )}
@@ -308,7 +308,7 @@ export default function SquadDetailsModal({ isOpen, squadId, onClose, onJoin }: 
                                                     <button
                                                         onClick={handleAddWorkflow}
                                                         disabled={!selectedChatflowId || isActionLoading}
-                                                        className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground transition-colors hover:bg-[#A6E63F] disabled:cursor-not-allowed disabled:opacity-60"
+                                                        className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground transition-colors hover:bg-[#9d6bff] disabled:cursor-not-allowed disabled:opacity-60"
                                                     >
                                                         <Plus className="h-4 w-4" />
                                                         {isActionLoading ? 'Adding...' : 'Add Chatflow'}

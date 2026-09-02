@@ -176,13 +176,13 @@ export default function PublishModal({ workflow, onClose, onConfirm }: PublishMo
           </div>
 
           <Button 
-            className="w-full h-12 rounded-full font-bold text-sm bg-primary text-primary-foreground hover:bg-[#A6E63F] active:scale-95 transition-all shadow-lg group overflow-hidden"
+            className="w-full h-12 rounded-full font-bold text-sm bg-primary text-primary-foreground hover:bg-[#9d6bff] active:scale-95 transition-all shadow-lg group overflow-hidden"
             onClick={handlePublish}
             disabled={!name.trim() || !description.trim() || isPublishing}
           >
             {isPublishing ? (
               <div className="flex items-center gap-2">
-                <div className="w-4 h-4 border-2 border-[#0A0A0A]/30 border-t-[#0A0A0A] rounded-full animate-spin" />
+                <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
                 <span>Publishing...</span>
               </div>
             ) : (

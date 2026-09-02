@@ -91,8 +91,8 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.145 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  --primary: #8C52FE;
+  --primary-foreground: oklch(1 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -102,7 +102,7 @@
   --destructive: oklch(0.396 0.141 25.723);
   --border: oklch(0.269 0 0);
   --input: oklch(0.269 0 0);
-  --ring: oklch(0.623 0.214 259.81); /* #3B82F6 - Blue Focus */
+  --ring: #8C52FE; /* Purple focus — matches the brand accent */
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
@@ -117,10 +117,10 @@
   --sidebar-border: oklch(0.269 0 0);
   --sidebar-ring: oklch(0.439 0 0);
 
-  /* Marketplace Premium Palette */
-  --primary: oklch(0.887 0.231 143.5); /* #B7F34C - Soft Neon Green */
-  --primary-foreground: oklch(0.08 0 0); /* #0A0A0A */
-  --primary-rgb: 183, 243, 76;
+  /* Brand accent — solid purple */
+  --primary: #8C52FE; /* Brand purple */
+  --primary-foreground: oklch(1 0 0); /* White ink on purple */
+  --primary-rgb: 140, 82, 254;
   
   --secondary: oklch(0.92 0 0); /* #E6E6E6 - Light Grey */
   --secondary-foreground: oklch(0.12 0 0); /* #111111 */
@@ -347,7 +347,7 @@
 
   --ds-accent:        var(--primary);
   --ds-accent-fg:     var(--primary-foreground);
-  --ds-accent-subtle: oklch(0.887 0.231 143.5 / 12%);
+  --ds-accent-subtle: rgba(140, 82, 254, 0.12);
 
   --ds-success:       oklch(0.75 0.17 158);
   --ds-warning:       oklch(0.80 0.15 78);

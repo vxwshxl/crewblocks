@@ -36,8 +36,8 @@ export default function TutorialsList() {
                     </p>
                 </div>
                 <div className="group bg-card border border-border rounded-none p-6">
-                    <div className="w-12 h-12 rounded-none bg-green-500/10 flex items-center justify-center mb-4 pb-0 border border-green-500/20">
-                        <ExternalLink className="w-6 h-6 text-green-500" />
+                    <div className="w-12 h-12 rounded-none bg-primary/10 flex items-center justify-center mb-4 pb-0 border border-primary/20">
+                        <ExternalLink className="w-6 h-6 text-primary" />
                     </div>
                     <h3 className="text-xl font-bold text-white mb-2">Using Extension</h3>
                     <p className="text-sm text-muted-foreground leading-relaxed">
