@@ -176,7 +176,7 @@ export default function PublishModal({ workflow, onClose, onConfirm }: PublishMo
           </div>
 
           <Button 
-            className="w-full h-12 rounded-full font-bold text-sm bg-primary text-primary-foreground hover:bg-[#9d6bff] active:scale-95 transition-all shadow-lg group overflow-hidden"
+            className="w-full h-12 rounded-full font-bold text-sm bg-primary text-primary-foreground hover:bg-[#A6E63F] active:scale-95 transition-all shadow-lg group overflow-hidden"
             onClick={handlePublish}
             disabled={!name.trim() || !description.trim() || isPublishing}
           >

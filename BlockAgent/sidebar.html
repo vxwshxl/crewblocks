@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BlockAgent Sidebar</title>
+  <title>CrewAgent Sidebar</title>
   <link rel="stylesheet" href="sidebar.css" />
 
   <!-- Markdown Parser & Sanitizer -->
@@ -20,16 +20,12 @@
   <div class="container">
     <header class="header">
       <div class="header-content">
-        <div class="header-left">
-          <div class="logo">
-            <!-- BlockAgent Logo/Icon placeholder -->
-            <img src="logoCS.png" alt="BlockAgent Logo" width="24" height="24" style="border-radius: 4px" />
-            <span>BlockAgent</span>
-          </div>
-        </div>
         <div class="header-actions">
-          <div class="select-wrapper agent-wrapper">
-            <select id="model-select" class="action-btn" title="Agent">
+          <!-- The agent picker is the header. The product name lives on the tab
+               and the toolbar icon, so repeating it here only stole width from
+               the one control that needs it. -->
+          <div class="agent-wrapper">
+            <select id="model-select" data-custom-select data-align="stretch" title="Agent">
               <option value="">Select agent...</option>
             </select>
           </div>
@@ -39,7 +35,7 @@
             type="button"
             role="switch"
             aria-checked="false"
-            title="Run on this Mac — nothing leaves the device"
+            title="Run locally — nothing leaves the device"
           >
             <svg class="tier-icon-cloud" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z" />
@@ -66,8 +62,8 @@
         <button class="tab-btn" data-target="memory-view">Memory</button>
       </div>
 
-      <div class="select-wrapper translate-wrapper">
-        <select id="translate-lang" class="action-btn" title="Translate Page">
+      <div class="translate-wrapper">
+        <select id="translate-lang" data-custom-select data-align="end" title="Translate Page">
           <option value="">Translate</option>
           <option value="as">Assamese</option>
           <option value="bn">Bengali</option>
@@ -83,9 +79,9 @@
         <div id="chat-container" class="chat-container">
           <div class="welcome-screen">
             <div class="welcome-icon">
-              <img src="logoCS.png" alt="BlockAgent Logo" width="40" height="40" />
+              <img src="logoCS.png" alt="CrewAgent Logo" width="40" height="40" />
             </div>
-            <h2>Welcome to BlockAgent</h2>
+            <h2>Welcome to CrewAgent</h2>
             <p>Your crew, working the web.</p>
             <p class="subtitle">
               I can read the page, answer questions, translate, and perform
@@ -136,7 +132,7 @@
         <!-- Added hidden file input -->
         <input type="file" id="file-upload-input" multiple accept="image/jpeg, image/png, image/webp" style="display: none;" />
         
-        <select id="speech-lang" class="speech-lang-select" title="Speech Language">
+        <select id="speech-lang" data-custom-select data-variant="bare" data-align="end" data-drop="up" title="Speech Language">
           <option value="en-US">EN</option>
           <option value="as-IN">AS</option>
           <option value="bn-IN">BN</option>
@@ -173,7 +169,7 @@
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
           </svg>
-          BlockAgent Agentic Engine
+          CrewAgent Agentic Engine
         </span>
         <button id="clear-btn" class="footer-action-btn" title="Clear Chat">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">

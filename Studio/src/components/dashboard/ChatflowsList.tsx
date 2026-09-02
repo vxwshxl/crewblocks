@@ -289,7 +289,7 @@ export default function ChatflowsList() {
                     <button
                         onClick={handleCreateNew}
                         disabled={isCreating}
-                        className="flex items-center gap-2 bg-[#8C52FE] text-white h-11 px-6 rounded-full text-sm font-bold shadow-sm mx-auto disabled:opacity-60 disabled:cursor-not-allowed"
+                        className="flex items-center gap-2 bg-primary text-primary-foreground h-11 px-6 rounded-full text-sm font-bold shadow-sm mx-auto hover:bg-primary/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                         <Plus className="w-4 h-4" /> {isCreating ? 'Creating…' : 'Create an agent'}
                     </button>

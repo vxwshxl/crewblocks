@@ -69,7 +69,7 @@ export default function ConfirmModal({
               className={`px-4 h-10 rounded-lg text-sm font-semibold flex items-center gap-2 ${
                 destructive 
                   ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20' 
-                  : 'bg-primary hover:bg-[#9d6bff] text-primary-foreground shadow-lg shadow-primary/20'
+                  : 'bg-primary hover:bg-[#A6E63F] text-primary-foreground shadow-lg shadow-primary/20'
               }`}
               onClick={onConfirm}
               disabled={loading}

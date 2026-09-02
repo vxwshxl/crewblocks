@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "BlockAgent",
+  "name": "CrewAgent",
   "version": "1.0.0",
-  "description": "BlockAgent Browser Assistant",
+  "description": "CrewAgent Browser Assistant",
   "permissions": [
     "activeTab",
     "scripting",
@@ -26,7 +26,7 @@
     }
   ],
   "action": {
-    "default_title": "Open BlockAgent Assistant",
+    "default_title": "Open CrewAgent Assistant",
     "default_icon": {
       "16": "logoCS.png",
       "32": "logoCS.png",

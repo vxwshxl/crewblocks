@@ -115,6 +115,46 @@ function toggleLoadingUI(isRunning) {
 let nextElementId = 1;
 
 /**
+ * The best human-readable name for an element.
+ *
+ * Order matters more than it looks. Accessible apps (Gmail, WhatsApp Web) put
+ * the real name in aria-label and leave `name`/`value` as internal tokens, so
+ * reading `value` first labelled every row checkbox "on" and made 50 elements
+ * indistinguishable to the model. Accessible names come first now.
+ */
+function labelFor(el) {
+    const byId = el.getAttribute('aria-labelledby');
+    if (byId) {
+        const parts = byId.split(/\s+/)
+            .map((id) => { const n = document.getElementById(id); return n && n.innerText; })
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+        if (parts) return parts.substring(0, 80);
+    }
+
+    const type = (el.type || '').toLowerCase();
+    // `value` is a real label on a submit button and pure noise on a checkbox.
+    const useValue = type !== 'checkbox' && type !== 'radio';
+
+    const candidates = [
+        el.getAttribute('aria-label'),
+        el.getAttribute('placeholder'),
+        el.getAttribute('title'),
+        el.getAttribute('alt'),
+        useValue ? el.value : null,
+        el.getAttribute('name'),
+        el.id,
+    ];
+
+    for (const candidate of candidates) {
+        const text = (candidate || '').toString().trim();
+        if (text) return text.substring(0, 80);
+    }
+    return '';
+}
+
+/**
  * Where an element sits in the viewport, in CSS pixels.
  *
  * Returns null for anything with no box or scrolled out of sight — the side
@@ -149,7 +189,7 @@ function extractContext() {
     try {
         document.querySelectorAll('input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]').forEach(i => {
             if (i.offsetParent !== null) {
-                const label = (i.placeholder || i.name || i.id || i.value || i.innerText || i.getAttribute('aria-label') || i.getAttribute('title') || "input").substring(0, 50);
+                const label = labelFor(i) || (i.innerText || '').trim().substring(0, 50) || (i.type || 'input');
                 if (!i.hasAttribute('data-1e-id')) {
                     i.setAttribute('data-1e-id', nextElementId);
                     // A password field is never a target, and its presence puts
@@ -157,6 +197,10 @@ function extractContext() {
                     const isSecret = i.type === 'password';
                     inputs.push({
                         id: nextElementId,
+                        // The model has to know a text box takes TYPE, not
+                        // CLICK. Without this the list is undifferentiated and
+                        // clicking a search field looks as reasonable as typing.
+                        kind: 'input',
                         name: isSecret ? '(password field)' : label,
                         type: i.type || i.tagName.toLowerCase(),
                         role: i.getAttribute('role'),
@@ -175,11 +219,12 @@ function extractContext() {
     try {
         document.querySelectorAll('button, a, [role="button"], [role="link"], [role="tab"], [tabindex], [onclick], li, .card, .track01').forEach(b => {
             if (b.offsetParent !== null) { // only visible
-                const label = (b.innerText || b.value || b.getAttribute('aria-label') || "").trim().substring(0, 100);
+                const label = ((b.innerText || '').trim() || labelFor(b)).substring(0, 100);
                 if (label && !b.hasAttribute('data-1e-id')) {
                     b.setAttribute('data-1e-id', nextElementId);
                     buttons.push({
                         id: nextElementId,
+                        kind: 'clickable',
                         text: label,
                         tag: b.tagName.toLowerCase(),
                         box: boxOf(b)
@@ -196,10 +241,10 @@ function extractContext() {
     try {
         document.querySelectorAll('img').forEach(img => {
             if (img.offsetParent !== null) { // only visible
-                const label = (img.alt || img.id || img.src || "image").substring(0, 100);
+                const label = (labelFor(img) || 'image').substring(0, 100);
                 if (!img.hasAttribute('data-1e-id')) {
                     img.setAttribute('data-1e-id', nextElementId);
-                    images.push({ id: nextElementId, name: label, type: 'image', box: boxOf(img) });
+                    images.push({ id: nextElementId, kind: 'image', name: label, type: 'image', box: boxOf(img) });
                     nextElementId++;
                 }
             }
@@ -385,6 +430,36 @@ function executeCommand(command) {
                             }
                             el.dispatchEvent(new Event('input', { bubbles: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+
+                        // Filling a search box and stopping is the classic dead
+                        // end: the value is there, the page never moves, and the
+                        // next turn sees an unchanged page. Enter is what a
+                        // person would press, so make it available.
+                        if (command.submit) {
+                            setTimeout(() => {
+                                for (const type of ['keydown', 'keypress', 'keyup']) {
+                                    el.dispatchEvent(new KeyboardEvent(type, {
+                                        key: 'Enter',
+                                        code: 'Enter',
+                                        keyCode: 13,
+                                        which: 13,
+                                        bubbles: true,
+                                        cancelable: true
+                                    }));
+                                }
+                                // Some forms listen for submit rather than Enter.
+                                const form = el.closest && el.closest('form');
+                                if (form && typeof form.requestSubmit === 'function') {
+                                    try {
+                                        form.requestSubmit();
+                                    } catch (e) {
+                                        console.warn('Form submit failed:', e.message);
+                                    }
+                                }
+                                resolve({ status: "success" });
+                            }, 300);
+                            return;
                         }
 
                         setTimeout(() => resolve({ status: "success" }), 300);

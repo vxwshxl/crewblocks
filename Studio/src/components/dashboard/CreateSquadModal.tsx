@@ -194,7 +194,7 @@ export default function CreateSquadModal({ isOpen, onClose, onSuccess }: CreateS
                                                 <p className={`text-sm font-medium truncate ${isSelected ? 'text-white' : 'text-gray-300'}`}>{cf.name}</p>
                                                 <p className="text-xs text-muted-foreground mt-0.5">Updated {new Date(cf.updated_at).toLocaleDateString()}</p>
                                             </div>
-                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center border shrink-0 transition-colors ${isSelected ? 'bg-primary border-primary text-white' : 'border-muted-foreground/30 bg-transparent'}`}>
+                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center border shrink-0 transition-colors ${isSelected ? 'bg-primary border-primary text-primary-foreground' : 'border-muted-foreground/30 bg-transparent'}`}>
                                                 {isSelected && <Check className="w-3 h-3" />}
                                             </div>
                                         </button>

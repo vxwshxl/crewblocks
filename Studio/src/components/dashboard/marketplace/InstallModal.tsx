@@ -83,7 +83,7 @@ export default function InstallModal({ workflow, onClose, onConfirm }: InstallMo
           </div>
 
           <Button 
-            className="w-full h-11 bg-primary hover:bg-[#9d6bff] text-primary-foreground rounded-full font-bold text-sm shadow-lg shadow-primary/10 group overflow-hidden"
+            className="w-full h-11 bg-primary hover:bg-[#A6E63F] text-primary-foreground rounded-full font-bold text-sm shadow-lg shadow-primary/10 group overflow-hidden"
             onClick={handleInstall}
             disabled={!name.trim() || isInstalling}
           >

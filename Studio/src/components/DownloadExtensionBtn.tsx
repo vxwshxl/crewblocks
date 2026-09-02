@@ -32,7 +32,7 @@ export default function DownloadExtensionBtn() {
                   <Puzzle className="w-5 h-5 text-primary" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-bold text-white">Download BlockAgent</h2>
+                  <h2 className="text-lg font-bold text-white">Download CrewAgent</h2>
                   <p className="text-xs text-muted-foreground">Chrome Browser Extension</p>
                 </div>
               </div>
@@ -50,7 +50,7 @@ export default function DownloadExtensionBtn() {
               <a
                 href="/BlockAgent.zip"
                 download="BlockAgent.zip"
-                className="flex items-center justify-center gap-3 w-full bg-[#bbf754] text-[#141414] font-semibold py-3.5 px-6 rounded-full transition-all hover:opacity-90 active:scale-[0.98]"
+                className="flex items-center justify-center gap-3 w-full bg-primary text-primary-foreground font-semibold py-3.5 px-6 rounded-full transition-all hover:opacity-90 active:scale-[0.98]"
               >
                 <Download className="w-5 h-5" />
                 Download BlockAgent.zip
@@ -108,7 +108,7 @@ export default function DownloadExtensionBtn() {
                     title: 'Pin & Use',
                     desc: (
                       <>
-                        Pin the BlockAgent extension from the puzzle icon in Chrome&apos;s toolbar. Click it on any page to open the sidebar!
+                        Pin the CrewAgent extension from the puzzle icon in Chrome&apos;s toolbar. Click it on any page to open the sidebar!
                       </>
                     ),
                   },

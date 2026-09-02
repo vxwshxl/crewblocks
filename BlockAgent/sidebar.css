@@ -1,10 +1,10 @@
 /* =============================================================================
- * BlockAgent side panel — CrewBlocks design language
+ * CrewAgent side panel — CrewBlocks design language
  *
  * Mirrors Studio/src/app/globals.css: the --ds-* semantic tier and dark
  * surfaces that express elevation by lightening, with the quick cubic-bezier
- * motion. The accent is solid BlockAgent purple (#8C52FE) rather than the
- * Studio green. Chrome (MV3) supports oklch(), so the exact surface token
+ * motion. The accent is the CrewBlocks lime (#B7F34C), shared with Studio.
+ * Chrome (MV3) supports oklch(), so the exact surface token
  * values are reused here rather than approximated.
  * ========================================================================== */
 
@@ -22,12 +22,13 @@
   --ds-border:        oklch(0.269 0 0);
   --ds-border-strong: oklch(0.34 0 0);
 
-  /* Primary — solid purple, white ink on top. */
-  --primary:          #8C52FE;
-  --primary-hover:    #9d6bff;
-  --primary-fg:       #ffffff;
-  --accent-subtle:    rgba(140, 82, 254, 0.14);
-  --accent-glow:      rgba(140, 82, 254, 0.45);
+  /* Primary — CrewBlocks lime. Near-black ink: white on this is ~1.5:1 and
+     unreadable, #0A0A0A is ~14:1. */
+  --primary:          #B7F34C;
+  --primary-hover:    #A6E63F;
+  --primary-fg:       #0A0A0A;
+  --accent-subtle:    rgba(183, 243, 76, 0.14);
+  --accent-glow:      rgba(183, 243, 76, 0.35);
 
   --danger:           oklch(0.68 0.19 22);
   --danger-subtle:    oklch(0.68 0.19 22 / 14%);
@@ -99,28 +100,6 @@ body {
   width: 100%;
 }
 
-.header-left {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex-shrink: 0;
-}
-
-.logo {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-weight: 700;
-  font-size: 15px;
-  letter-spacing: -0.01em;
-  color: var(--ds-fg);
-}
-
-.logo img {
-  border-radius: 7px !important;
-  box-shadow: 0 0 0 1px var(--ds-border), 0 0 14px var(--accent-glow);
-}
-
 .header-actions {
   display: flex;
   align-items: center;
@@ -133,27 +112,6 @@ body {
 .agent-wrapper {
   flex: 1;
   min-width: 0;
-  max-width: 200px;
-}
-
-/* Selects styled as pills */
-select.action-btn {
-  width: 100%;
-  text-overflow: ellipsis;
-  overflow: hidden;
-  white-space: nowrap;
-  appearance: none;
-  -webkit-appearance: none;
-  background: var(--ds-bg-subtle);
-  border: 1px solid var(--ds-border);
-  color: var(--ds-fg-secondary);
-  cursor: pointer;
-  padding: 7px 26px 7px 13px;
-  border-radius: 999px;
-  font-size: 12.5px;
-  font-weight: 500;
-  transition: border-color 120ms var(--ease-quick),
-              background 120ms var(--ease-quick), color 120ms var(--ease-quick);
 }
 
 .action-btn {
@@ -175,49 +133,6 @@ select.action-btn {
   border-color: var(--ds-border-strong);
   color: var(--ds-fg);
   background: var(--ds-bg-muted);
-}
-
-select.action-btn:focus,
-select.action-btn:hover {
-  border-color: var(--ds-border-strong);
-  color: var(--ds-fg);
-}
-
-select.action-btn:focus-visible {
-  outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--accent-subtle);
-}
-
-.select-wrapper {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.select-wrapper::after {
-  content: "";
-  position: absolute;
-  right: 11px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 0;
-  height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-top: 5px solid var(--ds-fg-muted);
-  pointer-events: none;
-  transition: transform 200ms var(--ease-quick);
-}
-
-.select-wrapper:focus-within::after {
-  transform: translateY(-50%) rotate(180deg);
-  border-top-color: var(--primary);
-}
-
-select.action-btn option {
-  background-color: var(--ds-bg-elevated);
-  color: var(--ds-fg);
 }
 
 /* ============================== Tabs ================================== */
@@ -271,13 +186,6 @@ select.action-btn option {
   margin-left: auto;
   display: flex;
   align-items: center;
-}
-
-.translate-wrapper select.action-btn {
-  font-size: 11.5px;
-  height: 32px;
-  padding: 0 24px 0 13px;
-  min-width: 108px;
 }
 
 /* =========================== Main content ============================= */
@@ -398,7 +306,7 @@ select.action-btn option {
 .welcome-chip {
   background: var(--primary);
   border: none;
-  color: #ffffff;
+  color: var(--primary-fg);
   font-size: 12px;
   font-weight: 600;
   padding: 8px 14px;
@@ -656,26 +564,6 @@ textarea::placeholder {
 
 .mic-btn svg {
   margin-left: 0;
-}
-
-.speech-lang-select {
-  appearance: none;
-  -webkit-appearance: none;
-  background: transparent;
-  border: none;
-  color: var(--ds-fg-muted);
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-  outline: none;
-  padding: 2px;
-  margin-left: 4px;
-  letter-spacing: 0.04em;
-}
-
-.speech-lang-select option {
-  background-color: var(--ds-bg-elevated);
-  color: var(--ds-fg);
 }
 
 .mic-btn.recording {
@@ -1200,4 +1088,202 @@ textarea::placeholder {
   background: var(--danger-subtle);
   border-color: var(--danger);
   color: var(--danger);
+}
+
+
+/* ============================ Custom select =============================== */
+/* Replaces the native <select> popup, which renders in OS chrome and cannot be
+   themed. The hidden native element still holds the value; see enhanceSelect. */
+
+.cbx-native {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.cbx {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.cbx[data-align="stretch"] {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.cbx-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  background: var(--ds-bg-subtle);
+  border: 1px solid var(--ds-border);
+  color: var(--ds-fg-secondary);
+  cursor: pointer;
+  padding: 7px 11px 7px 13px;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.2;
+  transition: border-color 120ms var(--ease-quick),
+              background 120ms var(--ease-quick),
+              color 120ms var(--ease-quick);
+}
+
+.cbx-trigger:hover {
+  border-color: var(--ds-border-strong);
+  background: var(--ds-bg-muted);
+  color: var(--ds-fg);
+}
+
+.cbx-trigger:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+.cbx.is-open .cbx-trigger {
+  border-color: var(--primary);
+  color: var(--ds-fg);
+  background: var(--ds-bg-muted);
+}
+
+.cbx-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.cbx.is-placeholder .cbx-value {
+  color: var(--ds-fg-muted);
+}
+
+.cbx-caret {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--ds-fg-muted);
+  transition: transform 200ms var(--ease-quick), color 120ms var(--ease-quick);
+}
+
+.cbx.is-open .cbx-caret {
+  transform: rotate(180deg);
+  color: var(--primary);
+}
+
+/* ---- Bare variant: the speech-language chip inside the composer ---- */
+.cbx[data-variant="bare"] .cbx-trigger {
+  background: transparent;
+  border: none;
+  padding: 2px 2px 2px 4px;
+  margin-left: 4px;
+  gap: 2px;
+  color: var(--ds-fg-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.cbx[data-variant="bare"] .cbx-trigger:hover {
+  background: transparent;
+  color: var(--ds-fg);
+}
+
+.cbx[data-variant="bare"] .cbx-caret {
+  width: 11px;
+  height: 11px;
+}
+
+/* ---- The listbox ---- */
+/* `display: flex` below outranks the UA stylesheet's `[hidden] {display:none}`,
+   so the hidden state has to be stated explicitly or the menu never closes. */
+.cbx-menu[hidden] {
+  display: none;
+}
+
+.cbx-menu {
+  position: absolute;
+  z-index: 60;
+  min-width: 100%;
+  max-height: 264px;
+  overflow-y: auto;
+  padding: 5px;
+  background: var(--ds-bg-elevated);
+  border-radius: 12px;
+  box-shadow: var(--elevation-3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: cbx-in 120ms var(--ease-quick);
+}
+
+.cbx[data-drop="down"] .cbx-menu { top: calc(100% + 6px); }
+.cbx[data-drop="up"]   .cbx-menu { bottom: calc(100% + 6px); }
+.cbx[data-align="start"]   .cbx-menu,
+.cbx[data-align="stretch"] .cbx-menu { left: 0; right: 0; }
+.cbx[data-align="end"]     .cbx-menu { right: 0; min-width: 148px; }
+
+@keyframes cbx-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.cbx-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ds-fg-secondary);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 120ms var(--ease-quick), color 120ms var(--ease-quick);
+}
+
+.cbx-option:hover,
+.cbx-option.is-active {
+  background: var(--ds-bg-muted);
+  color: var(--ds-fg);
+}
+
+.cbx-option[aria-selected="true"] {
+  background: var(--accent-subtle);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.cbx-option:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cbx-option:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cbx-menu { animation: none; }
+  .cbx-caret { transition: none; }
 }

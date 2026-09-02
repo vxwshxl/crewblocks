@@ -491,9 +491,9 @@ function updateUploadButtonVisibility(modelId) {
 const welcomeScreenHTML = `
                 <div class="welcome-screen">
                     <div class="welcome-icon">
-                        <img src="logoCS.png" alt="BlockAgent Logo" width="40" height="40">
+                        <img src="logoCS.png" alt="CrewAgent Logo" width="40" height="40">
                     </div>
-                    <h2>Welcome to BlockAgent</h2>
+                    <h2>Welcome to CrewAgent</h2>
                     <p>Your crew, working the web.</p>
                     <p class="subtitle">I can read the page, answer questions, translate, and perform browser actions for you.</p>
                     <div class="welcome-suggestions">
@@ -615,7 +615,7 @@ async function performTranslation(targetLang, langName) {
             console.log('Translation aborted.');
             return;
         }
-        addMessage("Translation failed. BlockAgent may be incorrect. Please verify connection.", "ai", "error");
+        addMessage("Translation failed. CrewAgent may be incorrect. Please verify connection.", "ai", "error");
         console.error(error);
         translateLang.value = "";
     } finally {
@@ -749,7 +749,52 @@ async function sendMessage() {
     addMessage(text, 'user', 'normal', msgImageData);
     chatHistory.push({ role: "user", content: text, image_data: msgImageData });
 
+    // Not every message is a job for the browser. Ask first, so "hi" cannot
+    // start a run that clicks something.
+    if (await isConversation(text)) return;
+
     runAgentLoop();
+}
+
+/**
+ * True when the message was conversation and has already been answered.
+ *
+ * Costs one short text-only turn. It only runs when a new task would otherwise
+ * start — never mid-run, and never on a resume — so it does not slow the loop
+ * itself. Any failure answers "no" and lets the run proceed, because refusing
+ * to work is worse than an unnecessary run.
+ */
+async function isConversation(text) {
+    const modelSelect = document.getElementById('model-select');
+    const selectedModel = modelSelect ? modelSelect.value : '';
+    if (!selectedModel) return false;
+
+    try {
+        const response = await fetch(`${BACKEND_URL}/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                mode: 'triage',
+                model: selectedModel,
+                messages: [{ role: 'user', content: text }],
+                preferLocal
+            })
+        });
+
+        if (!response.ok) return false;
+
+        const data = await response.json();
+        if (data.kind !== 'chat') return false;
+
+        const reply = data.text || 'What would you like me to do on this page?';
+        addMessage(reply, 'ai');
+        chatHistory.push({ role: 'assistant', content: reply });
+        return true;
+    } catch (e) {
+        console.warn('Triage failed, running the task anyway:', e.message);
+        return false;
+    }
 }
 
 // Extract the first, original user message from chat history
@@ -813,10 +858,10 @@ async function setPreferLocal(next, { persist = true } = {}) {
     if (toggle) {
         toggle.setAttribute('aria-checked', preferLocal ? 'true' : 'false');
         const label = toggle.querySelector('.tier-label');
-        if (label) label.textContent = preferLocal ? 'On this Mac' : 'Cloud';
+        if (label) label.textContent = preferLocal ? 'Local' : 'Cloud';
         toggle.title = preferLocal
-            ? 'Running on this Mac — nothing leaves the device. Click for cloud.'
-            : 'Running in the cloud. Click to run on this Mac instead.';
+            ? 'Running locally — nothing leaves the device. Click for cloud.'
+            : 'Running in the cloud. Click to run locally instead.';
     }
 
     if (persist) {
@@ -1244,12 +1289,43 @@ function drawMarks(ctx, canvas, context) {
  * to draw those badges here, so sending them is paying tokens for something
  * that gets ignored.
  */
+/** How many elements the model is shown. Beyond this, prefill cost dominates. */
+const MAX_ELEMENTS_SENT = 200;
+
+/**
+ * Ranks an element by how likely it is to be the thing the user meant.
+ *
+ * The old cap took the first 150 in DOM order, which on a Gmail-shaped page
+ * spent the whole budget on 50 inbox-row checkboxes and dropped the Send button
+ * at position 155 — the model could not have sent the mail if it had wanted to.
+ *
+ * Lower sorts first.
+ */
+function elementRank(el) {
+    if (el.kind === 'input') return 0;             // few, and always the target of TYPE
+    if (el.kind === 'image') return 3;             // content, never an action
+    const label = (el.text || el.name || '').trim();
+    if (!label) return 4;
+    // A short label is a control ("Send", "Compose"); a long one is usually a
+    // content link that happens to be clickable.
+    return label.length <= 30 ? 1 : 2;
+}
+
 function elementsForModel(elements) {
     if (!elements || !Array.isArray(elements.interactable)) return elements || {};
 
+    // Stable sort by rank, so ties keep DOM order (which is reading order).
+    const ordered = elements.interactable
+        .map((el, index) => ({ el, index }))
+        .sort((a, b) => elementRank(a.el) - elementRank(b.el) || a.index - b.index)
+        .slice(0, MAX_ELEMENTS_SENT)
+        .sort((a, b) => a.index - b.index)
+        .map((entry) => entry.el);
+
     return {
-        interactable: elements.interactable.slice(0, 150).map((el) => {
+        interactable: ordered.map((el) => {
             const lean = { id: el.id };
+            if (el.kind) lean.kind = el.kind;
             if (el.text) lean.text = el.text;
             if (el.name) lean.name = el.name;
             if (el.type) lean.type = el.type;
@@ -1709,7 +1785,7 @@ What is the next logical action?`;
         } else {
             console.error('Chat error:', error);
             removeElement(typingId);
-            addMessage('BlockAgent could not reach the backend. Check your connection and that you are signed in to CrewBlocks.', 'ai', 'error');
+            addMessage('CrewAgent could not reach the backend. Check your connection and that you are signed in to CrewBlocks.', 'ai', 'error');
             await clearRun();
         }
     } finally {
@@ -2384,3 +2460,200 @@ addMessage = function (text, sender, type = 'normal', images = []) {
         }
     }
 }
+
+/* ========================================================================== *
+ * Custom select
+ *
+ * Chrome renders a native <select> popup with the OS chrome, which reads as a
+ * foreign object inside a dark panel and cannot be styled. This replaces the
+ * popup with our own listbox.
+ *
+ * The native <select> stays in the DOM as the source of truth — hidden, but
+ * still holding the options and the value. Every existing call site keeps
+ * working untouched: `.value` reads, `.value =` writes, `innerHTML` repopulation
+ * and `change` listeners all behave exactly as before. This skin only mirrors
+ * the element and writes back through it.
+ * ========================================================================== */
+
+function enhanceSelect(select) {
+    if (!select || select.dataset.enhanced === 'true') return;
+    select.dataset.enhanced = 'true';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'cbx';
+    wrap.dataset.variant = select.dataset.variant || 'pill';
+    wrap.dataset.align = select.dataset.align || 'start';
+    wrap.dataset.drop = select.dataset.drop || 'down';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'cbx-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    if (select.title) trigger.title = select.title;
+
+    const value = document.createElement('span');
+    value.className = 'cbx-value';
+
+    const caret = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    caret.setAttribute('class', 'cbx-caret');
+    caret.setAttribute('viewBox', '0 0 24 24');
+    caret.setAttribute('fill', 'none');
+    caret.setAttribute('stroke', 'currentColor');
+    caret.setAttribute('stroke-width', '2.5');
+    caret.setAttribute('stroke-linecap', 'round');
+    caret.setAttribute('stroke-linejoin', 'round');
+    const caretPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    caretPath.setAttribute('d', 'M6 9l6 6 6-6');
+    caret.appendChild(caretPath);
+
+    trigger.append(value, caret);
+
+    const menu = document.createElement('div');
+    menu.className = 'cbx-menu';
+    menu.setAttribute('role', 'listbox');
+    menu.hidden = true;
+
+    select.parentNode.insertBefore(wrap, select);
+    wrap.append(trigger, menu, select);
+
+    // Hidden from both the pointer and the a11y tree — the trigger carries the
+    // semantics now, so exposing both would double up in a screen reader.
+    select.classList.add('cbx-native');
+    select.setAttribute('aria-hidden', 'true');
+    select.tabIndex = -1;
+
+    let activeIndex = -1;
+
+    const options = () => Array.from(select.options);
+
+    function paint() {
+        const chosen = select.options[select.selectedIndex];
+        value.textContent = chosen ? chosen.textContent : '';
+        wrap.classList.toggle('is-placeholder', !!chosen && chosen.value === '');
+    }
+
+    function build() {
+        menu.textContent = '';
+        options().forEach((option, index) => {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'cbx-option';
+            item.setAttribute('role', 'option');
+            item.setAttribute('aria-selected', index === select.selectedIndex ? 'true' : 'false');
+            item.dataset.index = String(index);
+            item.textContent = option.textContent;
+            if (option.disabled) item.disabled = true;
+            item.addEventListener('click', () => choose(index));
+            menu.appendChild(item);
+        });
+        paint();
+    }
+
+    function choose(index) {
+        const option = select.options[index];
+        if (!option || option.disabled) return;
+        if (select.selectedIndex !== index) {
+            select.selectedIndex = index;
+            // The whole point: existing listeners must fire as if a person had
+            // used the native control.
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        paint();
+        close();
+        trigger.focus();
+    }
+
+    function highlight(next) {
+        const items = Array.from(menu.querySelectorAll('.cbx-option:not([disabled])'));
+        if (!items.length) return;
+        const current = items.findIndex((el) => Number(el.dataset.index) === activeIndex);
+        let target = current + next;
+        if (target < 0) target = items.length - 1;
+        if (target >= items.length) target = 0;
+        activeIndex = Number(items[target].dataset.index);
+        items.forEach((el) => el.classList.toggle('is-active', Number(el.dataset.index) === activeIndex));
+        items[target].scrollIntoView({ block: 'nearest' });
+    }
+
+    function open() {
+        if (!menu.hidden) return;
+        build();
+        menu.hidden = false;
+        wrap.classList.add('is-open');
+        trigger.setAttribute('aria-expanded', 'true');
+        activeIndex = select.selectedIndex;
+        const current = menu.querySelector(`[data-index="${activeIndex}"]`);
+        if (current) {
+            current.classList.add('is-active');
+            current.scrollIntoView({ block: 'nearest' });
+        }
+        document.addEventListener('pointerdown', onOutside, true);
+    }
+
+    function close() {
+        if (menu.hidden) return;
+        menu.hidden = true;
+        wrap.classList.remove('is-open');
+        trigger.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('pointerdown', onOutside, true);
+    }
+
+    function onOutside(event) {
+        if (!wrap.contains(event.target)) close();
+    }
+
+    trigger.addEventListener('click', () => (menu.hidden ? open() : close()));
+
+    trigger.addEventListener('keydown', (event) => {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            if (menu.hidden) open();
+            else highlight(event.key === 'ArrowUp' ? -1 : 1);
+            return;
+        }
+        if (event.key === 'Escape') close();
+    });
+
+    menu.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            close();
+            trigger.focus();
+        }
+    });
+
+    wrap.addEventListener('focusout', () => {
+        // Leaving the whole control closes it; moving between its own parts does not.
+        window.setTimeout(() => {
+            if (!wrap.contains(document.activeElement)) close();
+        }, 0);
+    });
+
+    // Options are rebuilt asynchronously (fetchModels rewrites innerHTML).
+    new MutationObserver(() => {
+        if (menu.hidden) paint();
+        else build();
+    }).observe(select, { childList: true, subtree: true });
+
+    // `select.value = x` bypasses events, and several call sites restore the
+    // saved agent that way. Mirror the write so the trigger cannot go stale.
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+    if (descriptor) {
+        Object.defineProperty(select, 'value', {
+            configurable: true,
+            get() {
+                return descriptor.get.call(this);
+            },
+            set(next) {
+                descriptor.set.call(this, next);
+                paint();
+            },
+        });
+    }
+
+    select.addEventListener('change', paint);
+    build();
+}
+
+document.querySelectorAll('select[data-custom-select]').forEach(enhanceSelect);

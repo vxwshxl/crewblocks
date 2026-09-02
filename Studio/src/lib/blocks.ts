@@ -390,8 +390,12 @@ export const MODEL_CATALOG: ModelSpec[] = [
         note: 'Best grounding. Screenshots leave the device, so redaction applies.',
     },
     {
-        id: 'qwen3-vl-4b-instruct',
-        label: 'Qwen3-VL 4B · on this Mac',
+        // Must be the exact repo `scripts/model-server.sh` serves with --model.
+        // mlx_vlm.server treats an unknown model name as a HuggingFace repo to
+        // download, so a mismatch fails as "Repository Not Found", not as a
+        // routing error.
+        id: 'mlx-community/Qwen3-VL-4B-Instruct-4bit',
+        label: 'Qwen3-VL 4B · local',
         provider: 'openai-compatible',
         vision: true,
         local: true,
@@ -415,8 +419,14 @@ export const MODEL_CATALOG: ModelSpec[] = [
     },
 ];
 
+/** Ids that older stacks were saved with, mapped to their current spec. */
+const MODEL_ALIASES: Record<string, string> = {
+    'qwen3-vl-4b-instruct': 'mlx-community/Qwen3-VL-4B-Instruct-4bit',
+};
+
 export function getModel(id: string): ModelSpec | undefined {
-    return MODEL_CATALOG.find((m) => m.id === id);
+    const resolved = MODEL_ALIASES[id] ?? id;
+    return MODEL_CATALOG.find((m) => m.id === resolved);
 }
 
 export const MODELS = MODEL_CATALOG.map((m) => m.id);

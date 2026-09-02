@@ -96,7 +96,7 @@ export default function PaymentModal({ workflow, onClose, onSuccess }: PaymentMo
             </div>
 
             <Button 
-              className="w-full h-11 bg-primary hover:bg-[#9d6bff] text-primary-foreground rounded-full font-bold text-sm shadow-lg shadow-primary/10 group"
+              className="w-full h-11 bg-primary hover:bg-[#A6E63F] text-primary-foreground rounded-full font-bold text-sm shadow-lg shadow-primary/10 group"
               onClick={handlePayment}
             >
               Pay ₹{workflow.price}

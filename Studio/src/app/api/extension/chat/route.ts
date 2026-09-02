@@ -24,7 +24,9 @@ You MUST respond ONLY in valid JSON. One action per turn.
 
 AVAILABLE ACTIONS:
 CLICK     - Click something. Requires 'elementId' from the ELEMENTS table.
-TYPE      - Enter text. Requires 'elementId' and 'text'.
+TYPE      - Enter text into an input. Requires 'elementId' and 'text'.
+            Add "submit": true to press Enter afterwards. A search box needs this —
+            typing alone fills the field and nothing happens.
 SCROLL    - Scroll the page. Requires 'direction' ("UP" or "DOWN").
 NAVIGATE  - Go to a URL. Requires 'url'.
 TRANSLATE - Translate the page in place. Requires 'language' ('as','bn','brx','hi','en').
@@ -44,20 +46,30 @@ ASK       - Pause and ask the user for something only they can supply. The run S
 ANSWER    - The task is finished, or you are permanently blocked. This ENDS the run.
 
 CRITICAL RULES:
-1. CLICK and TYPE must use an elementId that appears in the current ELEMENTS table. Never target by fuzzy text, never invent a number.
-2. When a screenshot has numbered badges, the badge number IS the elementId. Read it off the badge.
-3. If what you need is not on screen, SCROLL. If several scrolls have not revealed it, stop and ANSWER saying what you could not find.
-4. Never repeat an action that did not change the page. Try something else, or ANSWER explaining that you are stuck.
-5. CAPTCHAS: never attempt one. ASK with expecting "text" for the user to read it out, then TYPE their reply.
-6. OTPs: never invent one. After triggering send, ASK with expecting "otp", then TYPE their reply.
-7. Do not re-NAVIGATE to a page you are already on.
-8. Do not give legal or medical advice. Point to official sources instead.
-9. Credit any tool you used in a 'usedTool' field.
-10. Only claim a task is done when the confirmation is actually visible on the page.
+1. If the user is making conversation, greeting you, or asking something you can answer
+   from what you know or from the page text already in front of you, reply with ANSWER
+   on the very first turn. Do NOT touch the page. Greetings like "hi", "thanks", "who are
+   you", and questions about the page's content are all ANSWER, never CLICK. Only act on
+   the page when the user actually asked for something to be done to it.
+2. Read the ELEMENTS table before choosing. Each entry has a "kind":
+     kind "input"     - a text field. Use TYPE. Clicking it changes nothing.
+     kind "clickable" - a button or link. Use CLICK.
+     kind "image"     - readable content, not a target. Never CLICK or TYPE it.
+   Using the wrong action for a kind is the single most common way to get stuck.
+3. CLICK and TYPE must use an elementId that appears in the current ELEMENTS table. Never target by fuzzy text, never invent a number.
+4. When a screenshot has numbered badges, the badge number IS the elementId. Read it off the badge.
+5. If what you need is not on screen, SCROLL. If several scrolls have not revealed it, stop and ANSWER saying what you could not find.
+6. Never repeat an action that did not change the page. Try something else, or ANSWER explaining that you are stuck.
+7. CAPTCHAS: never attempt one. ASK with expecting "text" for the user to read it out, then TYPE their reply.
+8. OTPs: never invent one. After triggering send, ASK with expecting "otp", then TYPE their reply.
+9. Do not re-NAVIGATE to a page you are already on.
+10. Do not give legal or medical advice. Point to official sources instead.
+11. Credit any tool you used in a 'usedTool' field.
+12. Only claim a task is done when the confirmation is actually visible on the page.
 
 EXAMPLES:
 {"action":"CLICK","elementId":15}
-{"action":"TYPE","elementId":12,"text":"Search query"}
+{"action":"TYPE","elementId":12,"text":"Search query","submit":true}
 {"action":"SCROLL","direction":"DOWN"}
 {"action":"NAVIGATE","url":"https://example.com"}
 {"action":"TRANSLATE","language":"as"}
@@ -68,6 +80,40 @@ EXAMPLES:
 {"action":"ASK","text":"Place the order for 2,499?","expecting":"confirmation"}
 {"action":"ASK","text":"Which size?","expecting":"choice","options":["M","L","XL"]}
 {"action":"ANSWER","text":"...","citations":[{"claim":"...","url":"..."}]}
+
+Respond in valid JSON only:`;
+
+/**
+ * Decides whether a message is a job for the browser at all.
+ *
+ * Rule 1 of the action protocol asks the model to answer conversation with
+ * ANSWER instead of touching the page, and on the 4B tier it measurably does
+ * not: "hi" came back as CLICK on element #2. This repeats the decision in a
+ * turn of its own, with no ELEMENTS table in front of the model to be tempted
+ * by, so a greeting cannot start a run at all.
+ *
+ * Same reasoning as the irreversible-action gate in the side panel: a guard the
+ * model can skip by choosing to is not a guard.
+ */
+const triageProtocol = `You decide whether a message needs browser automation.
+
+Respond ONLY in valid JSON:
+{"kind":"chat","text":"your reply"}   - conversation, a greeting, a question you can
+                                        answer from your own knowledge, or anything that
+                                        does not require changing a web page.
+{"kind":"task"}                       - the user asked for something to be DONE on a web
+                                        page: navigate, search, fill, click, buy, extract,
+                                        summarise the page in front of them, translate it.
+
+Examples:
+"hi"                                     -> {"kind":"chat","text":"Hi! What would you like me to do on this page?"}
+"who are you"                            -> {"kind":"chat","text":"I am CrewAgent..."}
+"what is the capital of France"          -> {"kind":"chat","text":"Paris."}
+"go to amazon and find formal shoes"     -> {"kind":"task"}
+"summarise this page"                    -> {"kind":"task"}
+"fill this form"                         -> {"kind":"task"}
+
+When genuinely unsure, choose "task".
 
 Respond in valid JSON only:`;
 
@@ -153,7 +199,8 @@ TODAY: ${new Date().toISOString().slice(0, 10)}
 CONTENT:
 ${pageContent ? pageContent.slice(0, 2000) : 'No page text captured.'}
 
-ELEMENTS (the only ids you may act on):
+ELEMENTS (the only ids you may act on).
+Each has a "kind": "input" takes TYPE, "clickable" takes CLICK, "image" is content only:
 ${JSON.stringify(elements)}
 ${
     hasMarkedScreenshot
@@ -179,6 +226,35 @@ export async function POST(req: NextRequest) {
         // The side panel sends the selected agent's id in the 'model' field.
         const agentId = model;
         const runtime = await loadAgent(agentId);
+
+        // Triage runs before anything reads the page, so it is cheap: no
+        // elements, no screenshot, a handful of output tokens.
+        if (body.mode === 'triage' && runtime) {
+            const latest = (messages as IncomingMessage[])
+                .filter((m) => m.role === 'user')
+                .slice(-1)[0]?.content ?? '';
+
+            try {
+                const verdict = await runModel({
+                    systemPrompt: triageProtocol,
+                    messages: [{ role: 'user', content: latest }],
+                    model: runtime.model,
+                    temperature: 0,
+                    geminiKey: runtime.geminiKey,
+                });
+                const kind = String(verdict.payload.kind ?? 'task').toLowerCase();
+                return corsHeaders(
+                    NextResponse.json({
+                        kind: kind === 'chat' ? 'chat' : 'task',
+                        text: typeof verdict.payload.text === 'string' ? verdict.payload.text : '',
+                    }),
+                    origin
+                );
+            } catch {
+                // Never let triage block real work — fall through to the run.
+                return corsHeaders(NextResponse.json({ kind: 'task', text: '' }), origin);
+            }
+        }
 
         if (!runtime) {
             return corsHeaders(
