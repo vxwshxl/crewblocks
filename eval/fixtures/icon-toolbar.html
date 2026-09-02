@@ -1,0 +1,27 @@
+<!doctype html><meta charset="utf-8">
+<title>Icon-only toolbar</title>
+<script type="application/json" id="expect">
+{
+  "name": "Buttons with icons and no text",
+  "goal": "format the selection",
+  "why": "A toolbar button carries no innerText at all. Its only name is aria-label or title, so a table built from text alone lists it as blank.",
+  "expect": [
+    { "label": "Bold", "kind": "clickable" },
+    { "label": "Underline", "kind": "clickable" },
+    { "label": "Attach a file", "kind": "clickable" },
+    { "label": "Message body", "kind": "input" }
+  ],
+  "reject": ["Send later"]
+}
+</script>
+<div role="toolbar">
+  <button aria-label="Bold"><svg width="16" height="16"><rect width="16" height="16"/></svg></button>
+  <button title="Underline"><svg width="16" height="16"><rect width="16" height="16"/></svg></button>
+  <span role="button" tabindex="0" aria-label="Attach a file">
+    <svg width="16" height="16"><rect width="16" height="16"/></svg>
+  </span>
+  <button aria-label="Send later" aria-disabled="true">
+    <svg width="16" height="16"><rect width="16" height="16"/></svg>
+  </button>
+</div>
+<div contenteditable="true" aria-label="Message body"></div>

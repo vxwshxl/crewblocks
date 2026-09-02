@@ -226,6 +226,31 @@ owns it with the id that frame knows. **The model never learns frames exist.** O
 limit: a sub-frame reports boxes in its own coordinate space, so sub-frame elements are sent
 without a `box` and get no Set-of-Mark badge. They are in the table, which is where the value is.
 
+### Generalising past the sites we happened to test on
+
+The first three fixtures were named after the sites they came from — Gmail, Amazon, a cookie
+banner — and that framing hid how narrow the extractor actually was. Auditing it against patterns
+rather than brands turned up five defects, each of which broke *any* page with that shape:
+
+| Defect | What it broke | Sites affected |
+|---|---|---|
+| `<label for>` never read | fields named by the standard HTML mechanism reached the model as `f_2` | any hand-written form |
+| `querySelectorAll` stops at shadow boundaries | element table came back **empty**, agent reported a blank page | anything built from web components |
+| `offsetParent !== null` used as the visibility test | `position: fixed` is *specified* to return null — sticky bars, floating buttons and modals were all dropped | most product and checkout pages |
+| `elementFromPoint` + `Node.contains` for occlusion | neither crosses a shadow boundary, so shadow content looked covered by its own host | same as above |
+| inputs collector never checked `disabled` | dead fields offered as TYPE targets, spending the error budget on actions that could never succeed | multi-step checkouts |
+
+The fixes are all in `content.js`: `labelElementText` for explicit and wrapping labels,
+`queryAllDeep` to walk open shadow roots, `isVisible` to test `position: fixed` properly,
+`sharesLineage` to follow the host chain, and an inert check on inputs covering `disabled`,
+`readOnly` and `aria-disabled`.
+
+The golden set is now **nine fixtures, named by the DOM pattern they exercise rather than by the
+site they came from** — a labelled form, a web component, a pinned action bar, an icon-only
+toolbar, a hand-rolled dropdown with inert controls, a 300-item result list. Amazon and Gmail stay
+as the two cases that came from real failures, but they are examples of a shape, not the shapes we
+support. **9 / 9 passing.**
+
 ### The golden set
 
 `eval/index.html` — open it in Chrome, no model, no keys, no network. It fetches the shipped
@@ -371,6 +396,36 @@ maxSteps 25 · maxWallClock 5 min · maxConsecutiveErrors 3 · actionTimeout 10 
 | Schema | reply unparseable, then unparseable again after one repair turn | `VALIDATION_FAILED` |
 | Domain | navigation outside the allowlist | `BLOCKED_DOMAIN` |
 | No answer | a suspended run waited 20 min unanswered (§5) | `INPUT_TIMEOUT` |
+
+**The agent could not see its own typing.** This was the single biggest cause of a run dying
+mid-task, and it was invisible because two separate pieces of the harness had the same blind spot.
+
+A field's contents live in `.value`. That appears in neither the DOM structure nor
+`body.innerText`. So:
+
+- The **element table** sent to the model listed `id`, `kind`, `name`, `type`, `role` — and no
+  value. After a successful TYPE the table was byte-for-byte what it had been before, so the model
+  had no evidence its typing worked, and retyped.
+- The **state signature** was `href | scrollY | element count | text length`. None of those move
+  when you fill a form, so a successful TYPE counted as *"the page did not change"*.
+
+Together those two turned every form-filling flow into a guaranteed loop: type, see no change,
+type again, and the repeat guard would kill the run on a task that was actually going fine.
+Observed on Gmail with the recipient **already correctly filled in** on screen.
+
+Inputs now carry `value`, and the signature folds in a djb2 hash of everything typed. The protocol
+tells the model what `value` means and that a field already holding the right thing is a step
+already done.
+
+**Secrets are never read.** `valueOf` returns nothing for a password field, an
+`autocomplete="cc-number"` field, or a `name` containing `cardnumber` — otherwise this change would
+have shipped whatever is typed in them to the model on every turn, purely for being on the page.
+Values are also capped at 120 characters, and the signature hashes them rather than storing them,
+so page contents do not accumulate in the run's `seen` map.
+
+Verified in a real browser against the real `extractContext`: a typed recipient appears, a
+contenteditable body appears, the signature moves, and neither a password nor a card number reaches
+the payload. `eval/field-state.test.mjs` holds the 14 unit cases.
 
 **Sensitive fields are refused per action, not per page.** An earlier draft of this
 spec hard-stopped the whole run whenever a password field existed anywhere on the

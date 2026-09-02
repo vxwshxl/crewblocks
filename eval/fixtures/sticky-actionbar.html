@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8">
+<title>Fixed-position action bar</title>
+<script type="application/json" id="expect">
+{
+  "name": "Action bar pinned to the viewport",
+  "goal": "buy the item",
+  "why": "offsetParent is null for every position:fixed element, so sticky bars, floating buttons and modals were filtered out as invisible.",
+  "expect": [
+    { "label": "Buy now", "kind": "clickable" },
+    { "label": "Add to wishlist", "kind": "clickable" },
+    { "label": "Read reviews", "kind": "clickable" }
+  ],
+  "reject": ["Hidden control"]
+}
+</script>
+<style>
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; padding: 16px; }
+  .float { position: fixed; right: 16px; bottom: 96px; }
+  .gone { display: none; }
+  body { padding-bottom: 200px; }
+</style>
+<h1>A product</h1>
+<p><a href="#reviews">Read reviews</a></p>
+<button class="gone">Hidden control</button>
+<div class="bar"><button>Buy now</button></div>
+<button class="float">Add to wishlist</button>

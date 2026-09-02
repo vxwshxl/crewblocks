@@ -19,7 +19,19 @@
 and asserts the elements a task needs are in what the model receives. No model, no keys, no network.</p>
 <div id="out">Running…</div>
 <script>
-const FIXTURES = ['gmail-compose.html', 'amazon-search.html', 'modal-occlusion.html'];
+const FIXTURES = [
+  // Named by the DOM pattern they exercise, not by the site they came from —
+  // the point is that any page with this shape works, not that these six do.
+  'gmail-compose.html',
+  'amazon-search.html',
+  'modal-occlusion.html',
+  'labelled-form.html',
+  'shadow-dom.html',
+  'sticky-actionbar.html',
+  'icon-toolbar.html',
+  'custom-dropdown.html',
+  'long-results.html',
+];
 
 // Single source of truth: pull the shipped extractor apart rather than copying it,
 // so this can never pass against code the extension does not run.
@@ -35,6 +47,10 @@ async function extractorSource() {
 }
 
 const norm = (s) => (s || '').trim().toLowerCase();
+
+// Fixture prose talks about HTML, so it has to be escaped before it is written
+// as HTML — otherwise "<label for>" disappears into the markup.
+const esc = (s) => (s || '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
 function check(sent, spec) {
   const rows = [];
@@ -81,10 +97,10 @@ function check(sent, spec) {
     const el = document.createElement('div');
     el.className = 'case';
     el.innerHTML =
-      `<div class="hd"><span class="pill ${pass ? 'ok' : 'bad'}">${pass ? 'PASS' : 'FAIL'}</span>${spec.name}</div>` +
-      `<div class="why">${spec.why} &nbsp;·&nbsp; ${ctx.elements.interactable.length} extracted, ${sent.length} sent</div>` +
+      `<div class="hd"><span class="pill ${pass ? 'ok' : 'bad'}">${pass ? 'PASS' : 'FAIL'}</span>${esc(spec.name)}</div>` +
+      `<div class="why">${esc(spec.why)} &nbsp;·&nbsp; ${ctx.elements.interactable.length} extracted, ${sent.length} sent</div>` +
       '<table>' + rows.map((r) =>
-        `<tr><td>${r.ok ? '✓' : '✕'}</td><td class="${r.ok ? 'hit' : 'miss'}">${r.text}</td></tr>`).join('') + '</table>';
+        `<tr><td>${r.ok ? '✓' : '✕'}</td><td class="${r.ok ? 'hit' : 'miss'}">${esc(r.text)}</td></tr>`).join('') + '</table>';
     out.appendChild(el);
     frame.remove();
   }

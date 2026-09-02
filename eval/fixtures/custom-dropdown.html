@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8">
+<title>Hand-rolled dropdown and inert controls</title>
+<script type="application/json" id="expect">
+{
+  "name": "Hand-rolled dropdown, disabled controls",
+  "goal": "pick a size, then continue",
+  "why": "Most real dropdowns are divs, not selects. Disabled and read-only controls look identical to live ones in the DOM and cost the error budget when offered.",
+  "expect": [
+    { "label": "Choose a size", "kind": "clickable" },
+    { "label": "Quantity", "kind": "input" },
+    { "label": "Continue", "kind": "clickable" }
+  ],
+  "reject": ["Out of stock", "Order total", "Not yet available"]
+}
+</script>
+<style>.opt{cursor:pointer}</style>
+<div role="combobox" aria-label="Choose a size" tabindex="0" aria-expanded="false">Select…</div>
+
+<label for="qty">Quantity</label>
+<input id="qty" name="qty" value="1">
+
+<!-- read-only: shows a computed value, cannot be typed into -->
+<label for="total">Order total</label>
+<input id="total" name="total" value="2499" readonly>
+
+<!-- disabled control, and one marked disabled only via ARIA -->
+<button disabled>Out of stock</button>
+<span role="button" tabindex="0" aria-disabled="true">Not yet available</span>
+
+<button>Continue</button>

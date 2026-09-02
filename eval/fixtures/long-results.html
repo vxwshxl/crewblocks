@@ -1,0 +1,31 @@
+<!doctype html><meta charset="utf-8">
+<title>Long result list</title>
+<script type="application/json" id="expect">
+{
+  "name": "Long result list with controls at the end",
+  "goal": "refine the search, then go to the next page",
+  "why": "Any results page buries its real controls under a hundred result links. The cap has to keep the search box and the pager, not the first 200 links.",
+  "expect": [
+    { "label": "Search", "kind": "input" },
+    { "label": "Next page", "kind": "clickable" },
+    { "label": "Sort by price", "kind": "clickable" }
+  ],
+  "reject": []
+}
+</script>
+<input aria-label="Search" value="running shoes">
+<div id="results"></div>
+<button>Sort by price</button>
+<a href="?page=2">Next page</a>
+<script>
+  // 300 result links, well past the 200-element budget, so the controls only
+  // survive if ranking runs before the cap.
+  const list = document.getElementById('results');
+  for (let i = 0; i < 300; i++) {
+    const a = document.createElement('a');
+    a.href = '/item/' + i;
+    a.textContent = 'Result ' + i + ' — a fairly long product title that goes on for a while';
+    list.appendChild(a);
+    list.appendChild(document.createElement('br'));
+  }
+</script>

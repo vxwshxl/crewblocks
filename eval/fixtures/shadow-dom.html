@@ -1,0 +1,42 @@
+<!doctype html><meta charset="utf-8">
+<title>Controls inside open shadow roots</title>
+<script type="application/json" id="expect">
+{
+  "name": "Controls inside a web component",
+  "goal": "search, then add the item",
+  "why": "querySelectorAll stops at a shadow boundary, so a page built from web components returned an empty table and the agent said the page was blank.",
+  "expect": [
+    { "label": "Search products", "kind": "input" },
+    { "label": "Add to cart", "kind": "clickable" },
+    { "label": "Checkout", "kind": "clickable" }
+  ],
+  "reject": []
+}
+</script>
+<h1>Store</h1>
+<search-bar></search-bar>
+<product-card></product-card>
+<script>
+  // A component whose control lives one shadow level deep.
+  customElements.define('search-bar', class extends HTMLElement {
+    connectedCallback() {
+      this.attachShadow({ mode: 'open' }).innerHTML =
+        '<input aria-label="Search products">';
+    }
+  });
+
+  // A component whose controls live two shadow levels deep, which is what a
+  // real design system produces.
+  customElements.define('cart-actions', class extends HTMLElement {
+    connectedCallback() {
+      this.attachShadow({ mode: 'open' }).innerHTML =
+        '<button>Add to cart</button><button>Checkout</button>';
+    }
+  });
+  customElements.define('product-card', class extends HTMLElement {
+    connectedCallback() {
+      this.attachShadow({ mode: 'open' }).innerHTML =
+        '<h2>A product</h2><cart-actions></cart-actions>';
+    }
+  });
+</script>

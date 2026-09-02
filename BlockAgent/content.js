@@ -122,6 +122,74 @@ let nextElementId = 1;
  * reading `value` first labelled every row checkbox "on" and made 50 elements
  * indistinguishable to the model. Accessible names come first now.
  */
+/**
+ * Every match for a selector, including inside open shadow roots.
+ *
+ * `document.querySelectorAll` stops at a shadow boundary, so a page built from
+ * web components returned an empty element table and the agent reported that
+ * there was nothing on the page. Any site can be built this way — this is not a
+ * property of a particular site, which is why it belongs here rather than in a
+ * per-site special case.
+ *
+ * Closed shadow roots are genuinely unreachable from a content script; nothing
+ * can be done about those.
+ */
+function queryAllDeep(selector, root) {
+    const scope = root || document;
+    const found = [];
+    const seen = new Set();
+
+    const visit = (node) => {
+        if (!node || seen.has(node)) return;
+        seen.add(node);
+
+        try {
+            node.querySelectorAll(selector).forEach((el) => found.push(el));
+        } catch (e) {
+            return; // a bad selector is the caller's problem, not a crash here
+        }
+
+        // Descend into any open shadow root beneath this node.
+        try {
+            node.querySelectorAll('*').forEach((el) => {
+                if (el.shadowRoot) visit(el.shadowRoot);
+            });
+        } catch (e) {
+            /* nothing further to walk */
+        }
+    };
+
+    visit(scope);
+    return found;
+}
+
+/**
+ * The text of a <label> that names this element, if one does.
+ *
+ * Covers both forms: `<label for="id">` pointing at it, and a `<label>` wrapping
+ * it. The wrapping case has to subtract the field's own text, or a label
+ * containing a checkbox returns the checkbox's value along with the words.
+ */
+function labelElementText(el) {
+    try {
+        if (el.id) {
+            const root = el.getRootNode() || document;
+            const explicit = root.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+            const text = explicit && (explicit.innerText || explicit.textContent || '').trim();
+            if (text) return text.substring(0, 80);
+        }
+
+        const wrapping = el.closest && el.closest('label');
+        if (wrapping) {
+            const text = (wrapping.innerText || wrapping.textContent || '').trim();
+            if (text) return text.substring(0, 80);
+        }
+    } catch (e) {
+        /* a malformed id breaks the selector, not the extraction */
+    }
+    return '';
+}
+
 function labelFor(el) {
     const byId = el.getAttribute('aria-labelledby');
     if (byId) {
@@ -139,6 +207,11 @@ function labelFor(el) {
 
     const candidates = [
         el.getAttribute('aria-label'),
+        // <label for="x"> and <label><input></label>: the plainest way to name a
+        // field in HTML, and the one every hand-written checkout form uses. It
+        // used to be skipped entirely, so a field with a machine-generated id
+        // reached the model as "f_2".
+        labelElementText(el),
         el.getAttribute('placeholder'),
         el.getAttribute('title'),
         el.getAttribute('alt'),
@@ -256,6 +329,33 @@ function isActionable(el) {
  * Only checked inside the viewport: `boxOf` already returns null for anything
  * scrolled off screen, and those elements are legitimately reachable later.
  */
+/**
+ * Whether an element is actually on the page.
+ *
+ * `offsetParent !== null` was the test, and it is wrong in one important way:
+ * the spec returns null for any `position: fixed` element as well as for hidden
+ * ones. Sticky action bars, floating buttons, cookie bars and modal dialogs are
+ * all fixed — so the controls most likely to be the thing the user meant were
+ * the ones being filtered out.
+ */
+function isVisible(el) {
+    if (el.offsetParent !== null) return true;
+
+    let style;
+    try {
+        style = getComputedStyle(el);
+    } catch (e) {
+        return false;
+    }
+    if (!style || style.display === 'none' || style.visibility === 'hidden') return false;
+
+    // No offsetParent and not fixed means genuinely not rendered.
+    if (style.position !== 'fixed') return false;
+
+    const box = el.getBoundingClientRect();
+    return box.width > 0 && box.height > 0;
+}
+
 function isOccluded(el, box) {
     if (!box) return false;
     const x = box.x + box.w / 2;
@@ -269,7 +369,29 @@ function isOccluded(el, box) {
         return false;
     }
     if (!hit) return false;
-    return !(hit === el || el.contains(hit) || hit.contains(el));
+    return !sharesLineage(hit, el);
+}
+
+/**
+ * Whether the node under the cursor is really this element.
+ *
+ * `elementFromPoint` stops at a shadow boundary and returns the host, and
+ * `Node.contains` does not cross one either — so without walking the host chain
+ * every element inside a shadow root looks covered by its own host and gets
+ * dropped as occluded.
+ */
+function sharesLineage(hit, el) {
+    if (hit === el || el.contains(hit) || hit.contains(el)) return true;
+
+    let node = el;
+    for (let depth = 0; depth < 10; depth++) {
+        const root = node.getRootNode && node.getRootNode();
+        const host = root && root.host;
+        if (!host) return false;
+        if (host === hit || hit.contains(host)) return true;
+        node = host;
+    }
+    return false;
 }
 
 function boxOf(el) {
@@ -290,16 +412,54 @@ function boxOf(el) {
 
 function extractContext() {
     // Clean up old IDs
-    document.querySelectorAll('[data-1e-id]').forEach(el => el.removeAttribute('data-1e-id'));
+    queryAllDeep('[data-1e-id]').forEach(el => el.removeAttribute('data-1e-id'));
     nextElementId = 1;
 
     // Limit text to avoid payload size issues but keep enough for e-commerce sites
     const text = document.body ? document.body.innerText.substring(0, 8000) : "";
 
-    const inputs = [];
+    /**
+ * What a field currently contains, as the model needs to see it.
+ *
+ * Without this the element table is identical before and after a successful
+ * TYPE, because a field's contents live in `.value`, which appears in neither
+ * the DOM structure nor `innerText`. The model then cannot tell its own typing
+ * worked, retypes, and the repeat guard kills the run — which is exactly how
+ * every form-filling flow was dying.
+ *
+ * Secrets are never read. A password or card number would otherwise be shipped
+ * to the model on every single turn just for being on the page.
+ */
+function valueOf(el) {
+    const type = (el.type || '').toLowerCase();
+    if (type === 'password') return undefined;
+
+    const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase();
+    const name = (el.getAttribute('name') || '').toLowerCase();
+    if (autocomplete.includes('cc-number') || name.includes('cardnumber')) return undefined;
+
+    const raw = el.isContentEditable
+        ? (el.innerText || '')
+        : (typeof el.value === 'string' ? el.value : '');
+
+    const trimmed = raw.trim();
+    if (!trimmed) return undefined;
+    // Enough to recognise what is there; a composed email body is not the point.
+    return trimmed.length > 120 ? trimmed.slice(0, 120) + '\u2026' : trimmed;
+}
+
+const inputs = [];
     try {
-        document.querySelectorAll('input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]').forEach(i => {
-            if (i.offsetParent !== null) {
+        queryAllDeep('input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]').forEach(i => {
+            // A field that cannot be typed into is not a target. Checkout forms
+            // disable steps until an earlier one is done, and offering those
+            // spends the error budget on actions that could never succeed.
+            const inert = i.disabled
+                || i.readOnly
+                || i.getAttribute('aria-disabled') === 'true'
+                || i.getAttribute('aria-hidden') === 'true';
+
+            if (isVisible(i) && !inert) {
                 const label = labelFor(i) || (i.innerText || '').trim().substring(0, 50) || (i.type || 'input');
                 const inputBox = boxOf(i);
                 if (!i.hasAttribute('data-1e-id') && !isOccluded(i, inputBox)) {
@@ -316,6 +476,9 @@ function extractContext() {
                         name: isSecret ? '(password field)' : label,
                         type: i.type || i.tagName.toLowerCase(),
                         role: i.getAttribute('role'),
+                        // What is in the field right now, so a filled field is
+                        // visibly different from an empty one.
+                        value: isSecret ? undefined : valueOf(i),
                         secret: isSecret || undefined,
                         box: inputBox
                     });
@@ -329,8 +492,8 @@ function extractContext() {
 
     const buttons = [];
     try {
-        document.querySelectorAll('button, a, [role="button"], [role="link"], [role="tab"], [tabindex], [onclick], li, .card, .track01').forEach(b => {
-            if (b.offsetParent !== null && isActionable(b)) { // visible and really a control
+        queryAllDeep('button, a, [role="button"], [role="link"], [role="tab"], [tabindex], [onclick], li, .card, .track01').forEach(b => {
+            if (isVisible(b) && isActionable(b)) { // visible and really a control
                 const label = ((b.innerText || '').trim() || labelFor(b)).substring(0, 100);
                 const buttonBox = boxOf(b);
                 if (label && !b.hasAttribute('data-1e-id') && !isOccluded(b, buttonBox)) {
@@ -352,8 +515,8 @@ function extractContext() {
 
     const images = [];
     try {
-        document.querySelectorAll('img').forEach(img => {
-            if (img.offsetParent !== null) { // only visible
+        queryAllDeep('img').forEach(img => {
+            if (isVisible(img)) { // only visible
                 const label = (labelFor(img) || 'image').substring(0, 100);
                 if (!img.hasAttribute('data-1e-id')) {
                     img.setAttribute('data-1e-id', nextElementId);
@@ -405,13 +568,40 @@ function extractContext() {
         sensitive,
         // Cheap fingerprint of "what the page currently is". The loop compares
         // these across turns to notice it is getting nowhere.
+        //
+        // `text` is `body.innerText`, which does not contain what is typed into
+        // a field — so before this, filling a form left the signature byte for
+        // byte identical and a successful TYPE counted as "the page did not
+        // change". Folding the field contents in makes typing progress.
         stateSignature: [
             location.href,
             Math.round(window.scrollY / 100),
             interactable.length,
-            text.length
+            text.length,
+            fieldsSignature(inputs)
         ].join('|')
     };
+}
+
+/**
+ * A short hash of everything currently typed on the page.
+ *
+ * Values are hashed rather than concatenated so the signature stays small and so
+ * page contents are not held in the run's `seen` map turn after turn.
+ */
+function fieldsSignature(inputs) {
+    let joined = '';
+    for (const input of inputs) {
+        if (input.value) joined += input.id + ':' + input.value + '|';
+    }
+    if (!joined) return '0';
+
+    // djb2: cheap, stable, and good enough to tell two form states apart.
+    let hash = 5381;
+    for (let i = 0; i < joined.length; i++) {
+        hash = ((hash << 5) + hash + joined.charCodeAt(i)) | 0;
+    }
+    return (hash >>> 0).toString(36);
 }
 
 /**
@@ -477,7 +667,7 @@ function executeCommand(command) {
                 // Id first. Coordinates are the fallback for canvas and
                 // cross-origin iframes, where there is no DOM node to address.
                 const el = command.elementId
-                    ? document.querySelector(`[data-1e-id="${command.elementId}"]`)
+                    ? queryAllDeep(`[data-1e-id="${command.elementId}"]`)[0]
                     : document.elementFromPoint(command.x, command.y);
 
                 if (el) {
@@ -507,7 +697,7 @@ function executeCommand(command) {
                         : { status: "success" });
                 }, 500);
             } else if (action === "TYPE" && command.elementId && command.text) {
-                const el = document.querySelector(`[data-1e-id="${command.elementId}"]`);
+                const el = queryAllDeep(`[data-1e-id="${command.elementId}"]`)[0];
 
                 if (el && el.type === 'password') {
                     resolve({ error: "Refused: that is a password field." });
@@ -585,7 +775,7 @@ function executeCommand(command) {
                 window.location.href = command.url;
                 // Don't resolve immediately; let the page unload
             } else if (action === "READ_IMAGE" && command.elementId) {
-                const el = document.querySelector(`[data-1e-id="${command.elementId}"]`);
+                const el = queryAllDeep(`[data-1e-id="${command.elementId}"]`)[0];
 
                 if (el && el.tagName.toLowerCase() === 'img') {
                     // Scroll to ensure it's fully visible and not blocked by sticky headers if possible

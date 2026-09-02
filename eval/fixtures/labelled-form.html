@@ -1,0 +1,35 @@
+<!doctype html><meta charset="utf-8">
+<title>Checkout form labelled by label elements</title>
+<script type="application/json" id="expect">
+{
+  "name": "Form labelled the standard HTML way",
+  "goal": "fill in a delivery address",
+  "why": "<label for> is how most hand-written forms name a field. It was never read, so a field with a generated id reached the model as 'f_2'.",
+  "expect": [
+    { "label": "Address line 1", "kind": "input" },
+    { "label": "Postcode", "kind": "input" },
+    { "label": "Delivery notes", "kind": "input" },
+    { "label": "Continue to payment", "kind": "clickable" }
+  ],
+  "reject": ["f_2", "f_3", "f_4", "Promo code"]
+}
+</script>
+<h1>Delivery address</h1>
+<form>
+  <!-- explicit: label points at the field by id -->
+  <label for="f_2">Address line 1</label>
+  <input id="f_2" name="f_2">
+
+  <!-- implicit: label wraps the field -->
+  <label>Postcode <input id="f_3" name="f_3"></label>
+
+  <!-- a textarea, labelled the same way -->
+  <label for="f_4">Delivery notes</label>
+  <textarea id="f_4" name="f_4"></textarea>
+
+  <!-- disabled until an earlier step completes: never a TYPE target -->
+  <label for="promo">Promo code</label>
+  <input id="promo" name="promo" disabled>
+
+  <button type="submit">Continue to payment</button>
+</form>

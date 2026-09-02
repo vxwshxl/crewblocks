@@ -481,11 +481,20 @@ No model, no keys, no network. The runner fetches the shipped `content.js` and `
 executes the **real** `extractContext` and `elementsForModel` against recorded pages — so it cannot
 pass against code the extension does not run.
 
+Cases are named by the **DOM pattern** they exercise, not by the site they came from — the point
+is that any page with that shape works, not that these nine do.
+
 | Case | Guards against |
 |---|---|
-| Gmail — compose and send | the Send button falling off the end of the element budget |
-| Amazon — search from the box | typing and clicking being indistinguishable |
+| Compose and send | the Send button falling off the end of the element budget |
+| Search from the box | typing and clicking being indistinguishable |
 | Cookie banner covering the page | offering controls that are painted over |
+| Form labelled the standard HTML way | `<label for>` being ignored, so fields arrive named `f_2` |
+| Controls inside a web component | `querySelectorAll` stopping at a shadow boundary |
+| Action bar pinned to the viewport | `position: fixed` controls read as invisible |
+| Buttons with icons and no text | a control whose only name is `aria-label` or `title` |
+| Hand-rolled dropdown, disabled controls | offering dead controls as targets |
+| Long result list with controls at the end | ranking running after the cap instead of before |
 
 Capability routing has its own runner, same principle — it extracts `resolveCapability` out of the
 shipped `sidebar.js` rather than importing a copy:
@@ -512,6 +521,18 @@ node eval/json-parse.test.mjs
 | `<think>` trace before the action | reasoning braces being read as the payload |
 | Prose containing braces | slicing from the first `{` to the last `}` |
 | Truncated mid-string | a half-JSON reply becoming a confidently wrong action |
+
+And field state, which decides whether the agent can see the effect of its own typing:
+
+```bash
+node eval/field-state.test.mjs
+```
+
+| Case | Guards against |
+|---|---|
+| Filled vs empty field | a successful TYPE looking identical to no TYPE |
+| Password / card-number field | a secret being shipped to the model for being on the page |
+| Signature moves when typed into | a filled form counting as "the page did not change" |
 
 Each fixture declares its own expectations in a JSON block — which labels must reach the model,
 with which `kind`, and which junk must not. Adding a case is one HTML file in `eval/fixtures/`.

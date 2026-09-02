@@ -1384,6 +1384,9 @@ function elementsForModel(elements) {
             if (el.name) lean.name = el.name;
             if (el.type) lean.type = el.type;
             if (el.role) lean.role = el.role;
+            // The current contents of a field. Without it the table looks
+            // identical before and after a successful TYPE.
+            if (el.value) lean.value = el.value;
             if (el.secret) lean.secret = true;
             return lean;
         }),

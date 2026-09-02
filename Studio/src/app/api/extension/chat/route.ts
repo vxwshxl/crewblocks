@@ -56,6 +56,10 @@ CRITICAL RULES:
      kind "clickable" - a button or link. Use CLICK.
      kind "image"     - readable content, not a target. Never CLICK or TYPE it.
    Using the wrong action for a kind is the single most common way to get stuck.
+   An input also carries "value": what is in that field RIGHT NOW. This is how you
+   see the effect of your own typing. If a field already holds what you wanted,
+   that step is DONE — move to the next one instead of typing it again. A field
+   with no "value" is empty.
 3. CLICK and TYPE must use an elementId that appears in the current ELEMENTS table. Never target by fuzzy text, never invent a number.
 4. When a screenshot has numbered badges, the badge number IS the elementId. Read it off the badge.
 5. If what you need is not on screen, SCROLL. If several scrolls have not revealed it, stop and ANSWER saying what you could not find.
@@ -289,7 +293,8 @@ CONTENT:
 ${pageContent ? pageContent.slice(0, 2000) : 'No page text captured.'}
 
 ELEMENTS (the only ids you may act on).
-Each has a "kind": "input" takes TYPE, "clickable" takes CLICK, "image" is content only:
+Each has a "kind": "input" takes TYPE, "clickable" takes CLICK, "image" is content only.
+An input's "value" is what that field contains right now — absent means empty:
 ${JSON.stringify(elements)}
 ${
     hasMarkedScreenshot
