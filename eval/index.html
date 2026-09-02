@@ -1,0 +1,98 @@
+<!doctype html><html><head><meta charset="utf-8"><title>CrewAgent — extractor golden set</title>
+<style>
+ :root{color-scheme:dark}
+ body{margin:0;padding:24px;background:#0d0d0d;color:#e8e8e8;font:14px/1.5 ui-sans-serif,system-ui,sans-serif}
+ h1{font-size:19px;margin:0 0 4px} .sub{color:#8f8f8f;margin:0 0 24px}
+ .case{border:1px solid #262626;border-radius:10px;padding:14px 16px;margin-bottom:12px;background:#141414}
+ .hd{display:flex;align-items:center;gap:10px;font-weight:600}
+ .pill{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px}
+ .ok{background:#B7F34C;color:#0a0a0a} .bad{background:#ff5c5c;color:#160000}
+ .why{color:#8f8f8f;font-size:12.5px;margin:6px 0 10px}
+ table{border-collapse:collapse;width:100%;font-size:12.5px}
+ td{padding:3px 10px 3px 0;vertical-align:top} td:first-child{width:22px}
+ .miss{color:#ff8b8b} .hit{color:#cfe9a0} code{color:#9fd0ff}
+ .total{margin:20px 0 0;font-size:15px;font-weight:700}
+ iframe{position:absolute;width:1280px;height:900px;left:-4000px;top:0;border:0}
+</style></head><body>
+<h1>Extractor golden set</h1>
+<p class="sub">Runs the real <code>extractContext</code> and <code>elementsForModel</code> against recorded pages,
+and asserts the elements a task needs are in what the model receives. No model, no keys, no network.</p>
+<div id="out">Running…</div>
+<script>
+const FIXTURES = ['gmail-compose.html', 'amazon-search.html', 'modal-occlusion.html'];
+
+// Single source of truth: pull the shipped extractor apart rather than copying it,
+// so this can never pass against code the extension does not run.
+async function extractorSource() {
+  const content = await (await fetch('../BlockAgent/content.js')).text();
+  const sidebar = await (await fetch('../BlockAgent/sidebar.js')).text();
+  const body = content.replace(
+    'if (!window.__1e_content_script_injected) {\n    window.__1e_content_script_injected = true;', '{');
+  const from = sidebar.indexOf('/** How many elements the model is shown.');
+  const to = sidebar.indexOf('function pruneHistoryImages');
+  if (from === -1 || to === -1) throw new Error('Could not locate elementsForModel in sidebar.js');
+  return 'window.chrome={runtime:{onMessage:{addListener(){}}}};\n' + body + '\n' + sidebar.slice(from, to);
+}
+
+const norm = (s) => (s || '').trim().toLowerCase();
+
+function check(sent, spec) {
+  const rows = [];
+  let pass = true;
+  for (const want of spec.expect) {
+    const hit = sent.find((e) => norm(e.text || e.name) === norm(want.label));
+    const kindOk = hit && (!want.kind || hit.kind === want.kind);
+    if (!hit || !kindOk) pass = false;
+    rows.push({ ok: !!hit && kindOk, text: hit
+      ? `“${want.label}” → id ${hit.id}, kind ${hit.kind}` + (kindOk ? '' : ` (expected ${want.kind})`)
+      : `“${want.label}” — NOT SENT TO MODEL` });
+  }
+  for (const bad of spec.reject || []) {
+    const found = sent.filter((e) => norm(e.text || e.name) === norm(bad)).length;
+    if (found) pass = false;
+    rows.push({ ok: !found, text: found ? `“${bad}” — ${found} junk element(s) still sent` : `“${bad}” — correctly absent` });
+  }
+  return { pass, rows };
+}
+
+(async () => {
+  const src = await extractorSource();
+  const out = document.getElementById('out');
+  out.innerHTML = '';
+  let passed = 0;
+
+  for (const file of FIXTURES) {
+    const frame = document.createElement('iframe');
+    frame.src = 'fixtures/' + file;
+    document.body.appendChild(frame);
+    await new Promise((r) => frame.addEventListener('load', r, { once: true }));
+
+    const win = frame.contentWindow;
+    const spec = JSON.parse(win.document.getElementById('expect').textContent);
+    const s = win.document.createElement('script');
+    s.textContent = src;
+    win.document.body.appendChild(s);
+
+    const ctx = win.extractContext();
+    const sent = win.elementsForModel(ctx.elements).interactable;
+    const { pass, rows } = check(sent, spec);
+    if (pass) passed++;
+
+    const el = document.createElement('div');
+    el.className = 'case';
+    el.innerHTML =
+      `<div class="hd"><span class="pill ${pass ? 'ok' : 'bad'}">${pass ? 'PASS' : 'FAIL'}</span>${spec.name}</div>` +
+      `<div class="why">${spec.why} &nbsp;·&nbsp; ${ctx.elements.interactable.length} extracted, ${sent.length} sent</div>` +
+      '<table>' + rows.map((r) =>
+        `<tr><td>${r.ok ? '✓' : '✕'}</td><td class="${r.ok ? 'hit' : 'miss'}">${r.text}</td></tr>`).join('') + '</table>';
+    out.appendChild(el);
+    frame.remove();
+  }
+
+  const t = document.createElement('p');
+  t.className = 'total';
+  t.textContent = `${passed} / ${FIXTURES.length} cases passing`;
+  t.style.color = passed === FIXTURES.length ? '#B7F34C' : '#ff8b8b';
+  out.appendChild(t);
+})().catch((e) => { document.getElementById('out').textContent = 'Runner error: ' + e.message; });
+</script></body></html>

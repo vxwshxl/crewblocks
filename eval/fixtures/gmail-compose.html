@@ -1,0 +1,36 @@
+<!doctype html><meta charset="utf-8">
+<title>Gmail — compose and send</title>
+<script type="application/json" id="expect">
+{
+  "name": "Gmail — compose and send",
+  "goal": "write an email to someone and send it",
+  "why": "The Send button sat at position 155 behind 50 row checkboxes and never reached the model.",
+  "expect": [
+    { "label": "To recipients", "kind": "input" },
+    { "label": "Subject",       "kind": "input" },
+    { "label": "Message Body",  "kind": "input" },
+    { "label": "Send",          "kind": "clickable" }
+  ],
+  "reject": ["on", "subjectbox"]
+}
+</script>
+<style>.dlg{position:fixed;right:40px;bottom:0;width:500px;height:420px;background:#fff;border:1px solid #ccc}
+.row{padding:6px;border-bottom:1px solid #eee}</style>
+<input type="text" aria-label="Search mail">
+<div id="rows"></div>
+<div class="dlg" role="dialog">
+  <input name="to" aria-label="To recipients" type="text">
+  <input name="subjectbox" aria-label="Subject" type="text">
+  <div contenteditable="true" role="textbox" aria-label="Message Body" tabindex="1" style="height:200px"></div>
+  <div role="button" tabindex="0">Send</div>
+</div>
+<script>
+const rows = document.getElementById('rows');
+for (let i = 0; i < 50; i++) {
+  const d = document.createElement('div'); d.className = 'row';
+  d.innerHTML = '<input type="checkbox" aria-label="Select">'
+    + '<span role="button" tabindex="0">Star</span>'
+    + '<a href="#" tabindex="0">Sender ' + i + ' - a subject line long enough to look like a real one</a>';
+  rows.appendChild(d);
+}
+</script>

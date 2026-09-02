@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8">
+<title>Amazon — search from the box</title>
+<script type="application/json" id="expect">
+{
+  "name": "Amazon — search from the box",
+  "goal": "search for formal shoes under 1000",
+  "why": "The agent clicked the search input instead of typing, because inputs and buttons looked alike.",
+  "expect": [
+    { "label": "Search Amazon", "kind": "input" },
+    { "label": "Go",            "kind": "clickable" }
+  ],
+  "reject": []
+}
+</script>
+<form>
+  <input type="text" aria-label="Search Amazon" placeholder="Search Amazon">
+  <input type="submit" value="Go">
+</form>
+<ul>
+  <li><a href="#">Today's Deals</a></li>
+  <li><a href="#">Customer Service</a></li>
+  <li><a href="#">Registry</a></li>
+</ul>

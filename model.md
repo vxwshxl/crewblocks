@@ -98,6 +98,160 @@ question — see §6.
 
 ---
 
+## 2.1 Element extraction — the table the model actually reads
+
+Set-of-Mark is only as good as the element table behind it. The badge is a pointer; the table is
+the map. This section is about the map, because for a week the map was the thing that was broken.
+
+### What was measured
+
+A Gmail-shaped page — 50 inbox rows, plus a `position: fixed` compose dialog with To / Subject /
+Body / Send — run through the real `extractContext`:
+
+| | Before | After |
+|---|---|---|
+| Send button reaches the model | **no** — position 155, cap was 150 | yes |
+| To / Subject named | `"to"` / `"subjectbox"` | `"To recipients"` / `"Subject"` |
+| 50 row checkboxes named | `"on"` ×50 | `"Select"` ×50 |
+| Input vs button distinguishable | no | `kind: "input" \| "clickable" \| "image"` |
+
+Three defects, all in the extractor, none in the model:
+
+1. **Accessible names were read last.** The order was `placeholder || name || id || value ||
+   innerText || aria-label`. Gmail and WhatsApp Web put the real name in `aria-label` and leave
+   `value` as an internal token, so every row checkbox arrived as `"on"` — fifty elements the
+   model could not tell apart. `labelFor()` now reads `aria-labelledby` → `aria-label` →
+   `placeholder` → `title` → `alt` → `value` → `name` → `id`, and ignores `value` on checkboxes
+   and radios.
+2. **The cap truncated in DOM order.** Fifty checkboxes ate the 150-element budget and the Send
+   button fell off the end. The model could not have sent the mail if it had chosen to. Elements
+   are now ranked before the cut — inputs first, then short-labelled controls, then long-labelled
+   content links, then images — and the budget is 200.
+3. **Kind was stripped.** Inputs and buttons arrived as one undifferentiated list, so `CLICK` on a
+   search box looked as reasonable as `TYPE`. That is exactly the loop the agent died in on
+   Amazon and on Gmail: click a text field, nothing changes, `NO_PROGRESS_LOOP`.
+
+**The lesson to keep:** every one of these looked like a model failure in the transcript. All three
+were the harness handing the model an unusable map. Before blaming the tier, dump the element table
+the model actually received.
+
+### What browser-use does, and what of it we can have
+
+`browser-use` (MIT) is the extractor behind A5-Browser-Use and the reason that project looks
+seamless. A5 itself is a FastAPI server plus a sidebar; the automation is all library.
+
+It no longer ships the injected `buildDomTree.js` it was once known for. Current `main` fuses
+**three CDP sources**, keyed by `backendNodeId`:
+
+| Source | CDP call | What it contributes |
+|---|---|---|
+| DOM tree | `DOM.getDocument` | structure, attributes |
+| Accessibility tree | `Accessibility.getFullAXTree` | real roles and computed accessible names |
+| Layout snapshot | `DOMSnapshot.captureSnapshot` | visibility, `cursor`, `pointer-events`, boxes |
+| Frames | `Page.getFrameTree` | per-frame targets, so iframes are not invisible |
+| Listeners | `Runtime.getProperties` on listener objects | whether a node is *actually* wired to a click |
+
+Plus `paint_order.py` for occlusion — which element is genuinely on top — and a 55 KB serializer
+that turns the fused tree into the text the model sees.
+
+**The constraint that decides everything: `DOMSnapshot` and `Accessibility.getFullAXTree` are not
+reachable from an MV3 content script.** A content script has DOM APIs and nothing else. Real
+event-listener enumeration is likewise devtools-only.
+
+### The three ways to close the gap
+
+| | Path | Keeps MV3 | Extra runtime | Verdict |
+|---|---|---|---|---|
+| **A** | Port the *techniques* into `content.js` with plain DOM APIs | yes | none | **doing this** |
+| **B** | `chrome.debugger` from the extension, real CDP | yes | none | held in reserve |
+| **C** | A5's stack: Python + browser-use + Chrome on port 9222 | no | Python, CDP port | **rejected** |
+
+**A** gets most of the value with no architectural cost. Accessible names, `cursor: pointer`,
+`pointer-events`, visibility and occlusion via `elementFromPoint` are all computable in a content
+script. What it cannot have is the true AX tree and real listener enumeration; those get
+approximated from `role`, `onclick`, and cursor style.
+
+**B** is the honest ceiling for an extension. MV3 *can* call `chrome.debugger.attach` and issue the
+same CDP commands browser-use uses, with no external process. The cost is the permanent *"CrewAgent
+is debugging this browser"* infobar and a conflict with DevTools being open — a real liability in a
+live demo, which is why it is reserve rather than plan.
+
+**C is rejected on arithmetic, not taste.** A5's local tier is
+`qwen2.5:32b-instruct-q4_K_M` — roughly 20 GB of weights. §1 already established that an 8B-4bit at
+~6 GB peak pushes this 16 GB Air into swap. A 32B does not load at all. Adopting A5's stack would
+not buy A5's results; it would buy A5's stack driven by a 4B, and since browser-use is a text-DOM
+pipeline we would also lose the Set-of-Mark vision fallback that §2 exists for. Worse on both axes,
+plus a Python process and a debugging port on the demo machine.
+
+**That is also the answer to "is our model too small".** A5 is seamless partly because it is
+running a model eight times the size of ours. That is not a gap we can close on this hardware, so
+the extractor has to be good enough that a 4B does not need to guess — and the cloud 8B stays the
+default path.
+
+### Workflow
+
+Staged, each step independently verifiable against the same recorded page:
+
+```
+1. Accessible names           labelFor()                          DONE
+2. Rank before capping        elementRank()                       DONE
+3. Kind by accepted action    kindOf() — input | clickable        DONE
+4. Interactivity filter       isActionable()                      DONE
+5. Occlusion                  isOccluded()                        DONE
+6. Iframes                    all_frames + per-frame routing      DONE
+7. Golden set                 eval/ — 3 cases, 3 passing          DONE
+```
+
+**3. Kind is decided by what an element accepts, not by its tag family.** `<input>` is not one
+thing: a text box takes `TYPE`, while a submit button, a checkbox and a radio take `CLICK`. Filing
+all of them under `input` told the model to type into a Send button. The golden set caught that on
+its first run, which is the whole argument for having one.
+
+**4. `isActionable()`** requires a real signal before an element is listed: an interactive tag, an
+actionable ARIA role, an `onclick`, `contenteditable`, or `cursor: pointer`. It rejects
+`pointer-events: none`, `aria-disabled`, `aria-hidden`, zero opacity — and it drops wrappers, so a
+`<li>` containing a link is not offered alongside the link. The wide net stays (real sites are full
+of hand-rolled controls); the layout it used to drag in does not.
+
+**5. `isOccluded()`** casts `elementFromPoint` at each box centre and drops anything painted over.
+A button under a cookie scrim is in the DOM, passes every style check, and cannot be clicked —
+listing it is an invitation to click it, see nothing happen, and loop. Only applied inside the
+viewport, because `boxOf` already returns null off-screen and those elements are legitimately
+reachable after a scroll. On the cookie-banner fixture this takes the table from 3 elements to 1.
+
+**6. Frames.** `all_frames: true` plus `match_about_blank`, and `webNavigation.getAllFrames` to
+enumerate. Each frame still numbers from 1, so the panel renumbers everything into one sequence and
+keeps `frameRouting: globalId → {frameId, localId}`; acting on id 42 dispatches to the frame that
+owns it with the id that frame knows. **The model never learns frames exist.** One deliberate
+limit: a sub-frame reports boxes in its own coordinate space, so sub-frame elements are sent
+without a `box` and get no Set-of-Mark badge. They are in the table, which is where the value is.
+
+### The golden set
+
+`eval/index.html` — open it in Chrome, no model, no keys, no network. It fetches the shipped
+`content.js` and `sidebar.js` and runs the **real** `extractContext` and `elementsForModel` against
+recorded pages, so it cannot pass against code the extension does not run.
+
+| Case | Guards against |
+|---|---|
+| Gmail — compose and send | the Send button falling off the end of the budget |
+| Amazon — search from the box | typing and clicking being indistinguishable |
+| Cookie banner covering the page | offering controls that are painted over |
+
+Each fixture carries its own expectations in a JSON block: which labels must reach the model, with
+which `kind`, and which junk must not. Adding a case is one HTML file.
+
+**What it does not do yet:** it measures the *table*, not the model. Running 4B against 8B on the
+same fixtures with known-correct actions is the remaining half, and it is what §11's parity
+question actually needs. The extractor half is worth having on its own — three of the four defects
+found so far were visible without a model at all.
+
+**Where the code lives.** Extraction is `BlockAgent/content.js` (`labelFor`, `extractContext`).
+The budget and ranking are `BlockAgent/sidebar.js` (`elementRank`, `elementsForModel`) — panel-side
+on purpose, so the cap can change without a content-script reinjection.
+
+---
+
 ## 3. Web access
 
 **Provider: Tavily, with Brave and DuckDuckGo behind the same interface.**
@@ -296,6 +450,15 @@ Stop and Clear chat both end a waiting run. That needs saying because a suspende
 back the next time the panel opened.
 
 **Status: built.**
+
+**Intent gate.** A run should not start for a message that was never a browser task. Rule 1 of the
+action protocol asks the model to answer conversation with `ANSWER` and not touch the page, and on
+the 4B tier it measurably does not — `"hi"` came back as `CLICK` on element #2. So the decision is
+taken in a turn of its own, before any page state is read, with no ELEMENTS table in front of the
+model to be tempted by: `mode: 'triage'` returns `chat` or `task`, and only `task` enters the loop.
+Same reasoning as the irreversible-action gate in §7 — a guard the model can skip by choosing to is
+not a guard. It costs one short text-only turn on a new task, never mid-run, and any failure falls
+through to running the task, because refusing to work is worse than an unnecessary run.
 
 ## 6. Speed
 
@@ -501,7 +664,13 @@ Worth exercising deliberately, because each one is a guard that is invisible whe
   Fix: put a key in `.env.local`, then delete the literal and rotate the exposed one.
 - Redaction is specified in §8 but not yet implemented — the cloud tier currently sends
   the marked screenshot unredacted. BlazeFace + the regex pass are the remaining work.
-- Golden-set eval for 4B-vs-8B grounding parity does not exist yet.
+- Golden-set eval for 4B-vs-8B grounding parity does not exist yet. It is now step 7 of the
+  §2.1 workflow and blocks any honest answer to "is the model too small" — three separate
+  failures have already been misattributed to model size.
+- The golden set in `eval/` measures the element table, not the model. The 4B-vs-8B half —
+  same fixtures, known-correct action, compare tiers — is still to build.
+- Sub-frame elements reach the model but carry no bounding box, so they get no Set-of-Mark
+  badge. Fixing it means mapping each frame's rect into top-frame coordinates.
 - `web_read` strips tags with a regex rather than a real readability pass.
 - The `citations` array is requested in the prompt but not yet schema-enforced on the
   way back; a malformed one is currently just ignored.

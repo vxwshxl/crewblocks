@@ -1963,12 +1963,99 @@ async function injectContentScriptIfNeeded(tabId) {
     });
 }
 
+/**
+ * Where each element the model can see actually lives.
+ *
+ * Every frame numbers its own elements from 1, so ids collide across frames.
+ * The panel renumbers them into one clean sequence for the model and remembers
+ * the mapping, so acting on id 42 dispatches to the right frame with the local
+ * id that frame knows it by. The model never learns frames exist.
+ */
+let frameRouting = new Map();
+
+/** Asks one frame for its slice of the page. Never rejects — a dead frame is normal. */
+function extractFromFrame(tabId, frameId) {
+    return new Promise((resolve) => {
+        chrome.tabs.sendMessage(tabId, { type: 'EXTRACT_CONTEXT' }, { frameId }, (response) => {
+            if (chrome.runtime.lastError || !response) {
+                void chrome.runtime.lastError;
+                resolve(null);
+                return;
+            }
+            resolve(response);
+        });
+    });
+}
+
+/**
+ * Merges every frame's elements into one table with one id space.
+ *
+ * Without this an iframe is simply invisible — the top frame's content script
+ * cannot see into it, so checkout forms, payment fields and embedded composers
+ * were absent from the table rather than merely hard to reach.
+ */
+async function getFramedContext(tab) {
+    let frames;
+    try {
+        frames = await chrome.webNavigation.getAllFrames({ tabId: tab.id });
+    } catch (e) {
+        console.warn('Could not enumerate frames:', e.message);
+        return null;
+    }
+    if (!frames || !frames.length) return null;
+
+    // Top frame first, so its ids stay low and its text is the page text.
+    frames.sort((a, b) => a.frameId - b.frameId);
+
+    const results = await Promise.all(frames.map((f) => extractFromFrame(tab.id, f.frameId)));
+
+    const routing = new Map();
+    const merged = [];
+    const headings = [];
+    let nextId = 1;
+    let top = null;
+
+    results.forEach((result, index) => {
+        if (!result) return;
+        const frameId = frames[index].frameId;
+        if (frameId === 0) top = result;
+
+        for (const el of (result.elements && result.elements.interactable) || []) {
+            const globalId = nextId++;
+            routing.set(globalId, { frameId, localId: el.id });
+            // A sub-frame reports boxes in its own coordinate space, so a badge
+            // drawn from them would land in the wrong place. Drop the box and
+            // the element still reaches the table — it just gets no badge.
+            const { box, ...rest } = el;
+            merged.push(frameId === 0 ? { ...rest, id: globalId, box } : { ...rest, id: globalId });
+        }
+
+        for (const heading of (result.elements && result.elements.headings) || []) {
+            if (!headings.includes(heading)) headings.push(heading);
+        }
+    });
+
+    if (!top) return null;
+    frameRouting = routing;
+
+    return {
+        ...top,
+        elements: { interactable: merged, headings },
+        frameCount: results.filter(Boolean).length
+    };
+}
+
 async function getPageContext() {
     const tab = await getActiveTab();
     if (!tab || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
         return { page_content: "Browser internal page - content access restricted.", elements: {}, url: tab ? tab.url : "", title: tab ? tab.title : "" };
     }
 
+    const framed = await getFramedContext(tab);
+    if (framed) return { ...framed, url: tab.url, title: tab.title };
+
+    // Single-frame fallback: the old path, for when webNavigation is unavailable.
+    frameRouting = new Map();
     return new Promise((resolve) => {
         chrome.tabs.sendMessage(tab.id, { type: "EXTRACT_CONTEXT" }, async (response) => {
             if (chrome.runtime.lastError) {
@@ -2026,19 +2113,25 @@ async function executeCommandInPage(command) {
         return;
     }
 
+    // Translate the model's global id back into the frame that owns the element
+    // and the id that frame knows it by.
+    const route = command.elementId ? frameRouting.get(Number(command.elementId)) : null;
+    const localCommand = route ? { ...command, elementId: route.localId } : command;
+    const target = route ? { frameId: route.frameId } : {};
+
     return new Promise((resolve) => {
         chrome.tabs.sendMessage(tab.id, {
             type: "EXECUTE_COMMAND",
-            command: command
-        }, async (response) => {
+            command: localCommand
+        }, target, async (response) => {
             if (chrome.runtime.lastError) {
                 console.warn("Initial execute command error:", chrome.runtime.lastError.message);
                 const injected = await injectContentScriptIfNeeded(tab.id);
                 if (injected) {
                     chrome.tabs.sendMessage(tab.id, {
                         type: "EXECUTE_COMMAND",
-                        command: command
-                    }, (retryResponse) => resolve(retryResponse || {}));
+                        command: localCommand
+                    }, target, (retryResponse) => resolve(retryResponse || {}));
                 } else {
                     resolve({});
                 }

@@ -161,6 +161,117 @@ function labelFor(el) {
  * panel draws a numbered badge from this, and a badge for something off screen
  * would point the model at empty space.
  */
+/**
+ * Which action an element accepts.
+ *
+ * `<input>` is not one thing. A text box takes TYPE; a submit button, a
+ * checkbox and a radio take CLICK. Filing all of them under "input" told the
+ * model to type into a Send button — caught by the golden set on its first run.
+ */
+const TYPEABLE_INPUT_TYPES = new Set([
+    'text', 'search', 'email', 'url', 'tel', 'number', 'password',
+    'date', 'datetime-local', 'month', 'week', 'time', ''
+]);
+
+function kindOf(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'textarea') return 'input';
+    if (el.isContentEditable) return 'input';
+    if (tag === 'input') {
+        return TYPEABLE_INPUT_TYPES.has((el.type || '').toLowerCase()) ? 'input' : 'clickable';
+    }
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    if (role === 'textbox' || role === 'searchbox') return 'input';
+    return 'clickable';
+}
+
+/** Roles that mean "a person operates this". */
+const ACTIONABLE_ROLES = new Set([
+    'button', 'link', 'tab', 'checkbox', 'radio', 'menuitem', 'menuitemcheckbox',
+    'menuitemradio', 'option', 'switch', 'treeitem', 'combobox', 'textbox', 'searchbox', 'slider'
+]);
+
+/** Tags that are interactive without needing a role or a handler. */
+const ACTIONABLE_TAGS = new Set(['button', 'a', 'input', 'textarea', 'select', 'summary']);
+
+/** The same net extractContext casts, used to spot wrapper elements. */
+const CANDIDATE_SELECTOR =
+    'button, a, input:not([type="hidden"]), textarea, select, summary, ' +
+    '[role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], ' +
+    '[role="switch"], [role="option"], [contenteditable="true"], [role="textbox"], [onclick]';
+
+/**
+ * Whether this node is really a control, or just something the net caught.
+ *
+ * The button selector casts wide on purpose — `li`, `[tabindex]` and `[onclick]`
+ * catch the hand-rolled controls that real sites are full of. The cost is that
+ * it also catches layout: every list row, every card wrapper. Those crowd the
+ * budget and give the model plausible-looking things to click that do nothing.
+ */
+function isActionable(el) {
+    const tag = el.tagName.toLowerCase();
+    const role = (el.getAttribute('role') || '').toLowerCase();
+
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+    if (el.getAttribute('aria-hidden') === 'true') return false;
+
+    let style;
+    try {
+        style = window.getComputedStyle(el);
+    } catch (e) {
+        return false;
+    }
+    if (!style) return false;
+    if (style.pointerEvents === 'none') return false;
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+    if (parseFloat(style.opacity) === 0) return false;
+
+    // A wrapper around a real control is not the control. Keep the innermost
+    // thing, which is what a person would actually click.
+    if (!ACTIONABLE_TAGS.has(tag) && !ACTIONABLE_ROLES.has(role)) {
+        try {
+            if (el.querySelector(CANDIDATE_SELECTOR)) return false;
+        } catch (e) {
+            /* selector unsupported here; fall through */
+        }
+    }
+
+    if (ACTIONABLE_TAGS.has(tag)) return true;
+    if (ACTIONABLE_ROLES.has(role)) return true;
+    if (el.hasAttribute('onclick')) return true;
+    if (el.isContentEditable) return true;
+    // The strongest hint a hand-rolled control gives about itself.
+    if (style.cursor === 'pointer') return true;
+
+    return false;
+}
+
+/**
+ * Whether something else is painted on top of this element.
+ *
+ * An element under a modal backdrop, a cookie banner or a sticky header is in
+ * the DOM, is "visible" by every style check, and cannot be clicked. Listing it
+ * invites the agent to click it, see nothing happen, and loop.
+ *
+ * Only checked inside the viewport: `boxOf` already returns null for anything
+ * scrolled off screen, and those elements are legitimately reachable later.
+ */
+function isOccluded(el, box) {
+    if (!box) return false;
+    const x = box.x + box.w / 2;
+    const y = box.y + box.h / 2;
+    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return false;
+
+    let hit;
+    try {
+        hit = document.elementFromPoint(x, y);
+    } catch (e) {
+        return false;
+    }
+    if (!hit) return false;
+    return !(hit === el || el.contains(hit) || hit.contains(el));
+}
+
 function boxOf(el) {
     const rect = el.getBoundingClientRect();
     if (rect.width < 4 || rect.height < 4) return null;
@@ -190,7 +301,8 @@ function extractContext() {
         document.querySelectorAll('input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]').forEach(i => {
             if (i.offsetParent !== null) {
                 const label = labelFor(i) || (i.innerText || '').trim().substring(0, 50) || (i.type || 'input');
-                if (!i.hasAttribute('data-1e-id')) {
+                const inputBox = boxOf(i);
+                if (!i.hasAttribute('data-1e-id') && !isOccluded(i, inputBox)) {
                     i.setAttribute('data-1e-id', nextElementId);
                     // A password field is never a target, and its presence puts
                     // the whole page into sensitive context.
@@ -200,12 +312,12 @@ function extractContext() {
                         // The model has to know a text box takes TYPE, not
                         // CLICK. Without this the list is undifferentiated and
                         // clicking a search field looks as reasonable as typing.
-                        kind: 'input',
+                        kind: kindOf(i),
                         name: isSecret ? '(password field)' : label,
                         type: i.type || i.tagName.toLowerCase(),
                         role: i.getAttribute('role'),
                         secret: isSecret || undefined,
-                        box: boxOf(i)
+                        box: inputBox
                     });
                     nextElementId++;
                 }
@@ -218,16 +330,17 @@ function extractContext() {
     const buttons = [];
     try {
         document.querySelectorAll('button, a, [role="button"], [role="link"], [role="tab"], [tabindex], [onclick], li, .card, .track01').forEach(b => {
-            if (b.offsetParent !== null) { // only visible
+            if (b.offsetParent !== null && isActionable(b)) { // visible and really a control
                 const label = ((b.innerText || '').trim() || labelFor(b)).substring(0, 100);
-                if (label && !b.hasAttribute('data-1e-id')) {
+                const buttonBox = boxOf(b);
+                if (label && !b.hasAttribute('data-1e-id') && !isOccluded(b, buttonBox)) {
                     b.setAttribute('data-1e-id', nextElementId);
                     buttons.push({
                         id: nextElementId,
                         kind: 'clickable',
                         text: label,
                         tag: b.tagName.toLowerCase(),
-                        box: boxOf(b)
+                        box: buttonBox
                     });
                     nextElementId++;
                 }

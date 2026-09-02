@@ -1,0 +1,19 @@
+<!doctype html><meta charset="utf-8">
+<title>Cookie banner covering the page</title>
+<script type="application/json" id="expect">
+{
+  "name": "Cookie banner covering the page",
+  "goal": "accept cookies, then use the page",
+  "why": "Buttons under a full-screen backdrop are in the DOM and cannot be clicked. Listing them invites a loop.",
+  "expect": [ { "label": "Accept all", "kind": "clickable" } ],
+  "reject": ["Buy now", "Add to basket"]
+}
+</script>
+<style>
+ .under{position:absolute;top:100px;left:20px}
+ .scrim{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10}
+ .banner{position:fixed;left:0;right:0;bottom:0;z-index:11;background:#fff;padding:20px}
+</style>
+<div class="under"><button>Buy now</button><button>Add to basket</button></div>
+<div class="scrim"></div>
+<div class="banner"><button>Accept all</button></div>

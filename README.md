@@ -17,9 +17,11 @@
     <a href="#overview">Overview</a> ·
     <a href="#the-block-system">Blocks</a> ·
     <a href="#architecture">Architecture</a> ·
+    <a href="#how-the-agent-sees-a-page">Perception</a> ·
     <a href="#getting-started">Getting Started</a> ·
     <a href="#api-reference">API</a> ·
-    <a href="#agent-action-protocol">Action Protocol</a>
+    <a href="#agent-action-protocol">Action Protocol</a> ·
+    <a href="#evaluation">Evaluation</a>
   </p>
 </div>
 
@@ -34,7 +36,15 @@ extension picks it up on your next message.
 
 The agent is not limited to conversation. Every turn it receives the active tab's URL, title, text
 content, and an indexed map of interactable DOM elements, then replies with a single structured
-action: click an element, type into a field, scroll, navigate, translate the page, or answer.
+action: click an element, type into a field, scroll, navigate, search the live web, ask you a
+question and wait, translate the page, or answer.
+
+It also knows when *not* to act. A message that is conversation rather than a browser task is
+triaged out before any page state is read, so "hi" gets a reply instead of a click.
+
+> The extension is named **CrewAgent** in Chrome. Its source directory is still `BlockAgent/`, and
+> the `TOGGLE_BLOCKAGENT` / `SYNC_BLOCKAGENT` window messages keep that name — they are a wire
+> contract with the Studio side, documented in `CLAUDE.md`.
 
 **Two deployables, one repository:**
 
@@ -137,29 +147,49 @@ flowchart LR
         Compiler["compileStack()"]
     end
 
+    subgraph Models["Model tiers"]
+        CLOUD["Qwen3-VL 8B<br/>OpenRouter"]
+        LOCAL["Qwen3-VL 4B<br/>MLX · 127.0.0.1:8081"]
+        GM["Gemini<br/>legacy"]
+    end
+
     subgraph External["External services"]
-        SB[("Supabase<br/>Postgres · Auth")]
-        GM["Google Gemini"]
+        SB[("Supabase<br/>Postgres · Auth · RLS")]
+        TV["Tavily · Brave · DDG"]
         BH["Bhashini"]
     end
 
-    CS -- "page context<br/>+ element map" --> SP
-    SP -- "prompt + context<br/>(session cookie)" --> API
+    CS -- "elements + text<br/>per frame" --> SP
+    SP -- "merge frames<br/>rank · cap" --> SP
+    SP -- "context + message<br/>(session cookie)" --> API
     API --> Compiler
-    Compiler -- "system prompt" --> GM
+    Compiler -- "system prompt" --> CLOUD
+    Compiler --> LOCAL
+    Compiler -.-> GM
     API --> SB
+    API --> TV
     API --> BH
-    API -- "action JSON" --> SP
-    SP -- "execute action" --> CS
+    API -- "one action, JSON" --> SP
+    SP -- "route to owning frame" --> CS
     Editor --> SB
     SW -.- SP
 ```
 
-**Request lifecycle.** The content script indexes interactable elements and extracts page text. The
-side panel posts that context with your message to `/api/extension/chat`. The route loads the
-agent's block stack from Supabase, compiles it into a system prompt, loads your Gemini key and any
-stored memories, then calls Gemini. The response — strict JSON — returns to the side panel, which
-dispatches the action to the content script.
+**Request lifecycle.**
+
+1. A content script runs in **every frame** and indexes that frame's interactable elements.
+2. The side panel enumerates frames, merges their elements into one id space, ranks them and caps
+   the table — see [Perception](#how-the-agent-sees-a-page).
+3. On a new message it first asks the route to **triage**: conversation, or a browser task? Only a
+   task starts a run.
+4. It posts the page context to `/api/extension/chat`. The route loads the agent's stack from
+   Supabase, compiles it to a system prompt, and calls the tier the Model block selects.
+5. `SEARCH` and `READ_URL` are resolved server-side and fed back to the model, so the panel only
+   ever receives a browser action.
+6. The action returns as strict JSON and is dispatched to the frame that owns the target element.
+
+The loop is bounded — step budget, working-time budget, repeated-state detection — and irreversible
+clicks are gated in code rather than in the prompt. `model.md` §4 and §7 carry the reasoning.
 
 ### Repository layout
 
@@ -183,17 +213,64 @@ crewblocks/
 │       │   ├── dashboard/          # Dashboard surfaces and marketplace
 │       │   └── ui/                 # shadcn-style primitives
 │       ├── lib/
-│       │   └── blocks.ts           # Block model, tool library, validator, compiler
+│       │   ├── blocks.ts           # Block model, tool library, validator, compiler
+│       │   ├── providers.ts        # Model id → cloud / on-device / Gemini routing
+│       │   └── search.ts           # Tavily · Brave · DuckDuckGo behind one interface
 │       ├── utils/supabase/         # Browser, server, and middleware clients
 │       └── middleware.ts           # Session refresh + route protection
+│   └── supabase/schema.sql         # Tables, RLS policies, helper functions — run once
 │
-└── BlockAgent/                     # Chrome MV3 extension
-    ├── manifest.json               # Permissions, side panel, content scripts
-    ├── background.js               # Service worker — opens the side panel
-    ├── content.js                  # DOM extraction + action execution
-    ├── sidebar.{html,css,js}       # Side panel UI and API client
-    └── vendor/                     # marked · highlight.js · DOMPurify
+├── BlockAgent/                     # Chrome MV3 extension — ships as "CrewAgent"
+│   ├── manifest.json               # Permissions, side panel, all_frames content script
+│   ├── background.js               # Service worker — opens the side panel
+│   ├── content.js                  # Element extraction + action execution, per frame
+│   ├── sidebar.{html,css,js}       # Side panel UI, agent loop, frame merge, API client
+│   └── vendor/                     # marked · highlight.js · DOMPurify
+│
+├── eval/                           # Extractor golden set — open index.html in Chrome
+│   ├── index.html                  # Runner; loads the real extractor, no keys needed
+│   └── fixtures/                   # Recorded pages + their expectations
+│
+├── scripts/                        # dev.sh · model-server.sh · setup-model.sh
+└── model.md                        # Every model and perception decision, with reasons
 ```
+
+---
+
+## How the agent sees a page
+
+The model never sees raw HTML. It sees a table of elements, and the quality of that table decides
+almost everything — three separate failures that looked like model weakness turned out to be the
+table. `model.md` §2.1 has the measurements; this is the shape.
+
+```
+content.js, in every frame
+  ├─ labelFor()      accessible name first: aria-labelledby → aria-label →
+  │                  placeholder → title → alt → value → name → id
+  ├─ kindOf()        by accepted action, not tag: a text box is "input",
+  │                  a submit button and a checkbox are "clickable"
+  ├─ isActionable()  needs a real signal — interactive tag, ARIA role,
+  │                  onclick, contenteditable, or cursor:pointer.
+  │                  Rejects pointer-events:none, aria-disabled, wrappers
+  └─ isOccluded()    elementFromPoint at the box centre; anything painted
+                     over is dropped, so the agent is not offered a button
+                     sitting under a cookie banner
+
+sidebar.js, once per turn
+  ├─ merge frames    every frame numbers from 1; the panel renumbers into one
+  │                  sequence and remembers globalId → {frameId, localId}
+  ├─ elementRank()   inputs, then short-labelled controls, then content links,
+  │                  then images
+  └─ cap at 200      ranked first, so the Send button survives the cut
+```
+
+Each element reaches the model as `{ id, kind, text | name, type?, role? }`. Bounding boxes are
+stripped — they exist only so the panel can paint Set-of-Mark badges onto a screenshot when the
+Vision block asks for one.
+
+**Why the `kind` field earns its place.** Without it, `CLICK` on a search box looks as reasonable
+to the model as `TYPE`. Clicking a text field changes nothing, the page state hash is unchanged,
+and the loop guard fires — which reads in the transcript as the model being stupid.
 
 ---
 
@@ -201,15 +278,23 @@ crewblocks/
 
 ### Prerequisites
 
-- Node.js 20+ and pnpm
+- Node.js 20+ and **pnpm** (never `npm install` in this repo)
 - A Supabase project (Postgres + Auth)
-- A Google Gemini API key
 - Google Chrome
+- An OpenRouter key for the cloud tier — *or* Python 3.11+ and ~4 GB free RAM for the on-device one
 
-### 1. Configure the studio
+### 1. Create the database
+
+Open your Supabase project → **SQL Editor** → paste [`Studio/supabase/schema.sql`](Studio/supabase/schema.sql)
+→ Run. It is idempotent, so it is safe to re-run.
+
+This creates 9 tables, enables RLS on every one of them, and adds the two `SECURITY DEFINER` helper
+functions squad visibility needs. **Skipping it is the single most common setup failure** — auth
+succeeds, then every query returns `PGRST205: Could not find the table`.
+
+### 2. Configure the studio
 
 ```bash
-cd Studio
 pnpm install
 ```
 
@@ -219,56 +304,66 @@ Create `Studio/.env.local`:
 NEXT_PUBLIC_SUPABASE_URL=your-project-url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 
-# Optional — server-side translation and provider keys
+# Cloud model tier
+OPENROUTER_API_KEY=your-openrouter-key
+
+# Optional
+LOCAL_MODEL_URL=http://127.0.0.1:8081/v1   # on-device tier, if not the default
+TAVILY_API_KEY=your-tavily-key             # web search; Brave and DDG also supported
 BHASHINI_SUBSCRIPTION_KEY=your-bhashini-key
-SARVAM=your-sarvam-key
+NEXT_PUBLIC_DEV_AUTH_BYPASS=1              # local only — fakes a signed-in user
 ```
 
 | Variable | Required | Purpose |
 |---|:--:|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | ✅ | Supabase project endpoint |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ✅ | Public client key; RLS enforces access |
+| `OPENROUTER_API_KEY` | ◐ | Cloud tier. Not needed if you only run on-device |
+| `TAVILY_API_KEY` | — | Web search. Falls back to Brave, then DuckDuckGo |
 | `BHASHINI_SUBSCRIPTION_KEY` | — | Page translation pipeline |
-| `SARVAM` | — | Sarvam AI access |
+| `LOCAL_MODEL_URL` | — | Overrides where the on-device server is expected |
 
-> **Model keys are not environment variables.** Provider keys are added per user in
-> **Dashboard → API Keys** and stored against the account, so the extension ships with no
-> credentials of its own.
+> **Gemini keys are not environment variables.** The legacy Gemini path reads a per-user key from
+> **Dashboard → API Keys**, stored against the account under RLS.
 
-### 2. Run it
+### 3. Run it
 
 ```bash
-pnpm dev
+pnpm dev        # Studio + the on-device model server; Ctrl-C stops both
+pnpm dev:ui     # Studio only — cloud tier, no local model
+pnpm dev:model  # the model server on its own
+pnpm setup:model  # one-time: venv + mlx-vlm + weights (~2.5 GB)
 ```
 
-The studio is served at `http://localhost:3000`. Sign up, then:
+The studio is served at `http://localhost:3000`. Sign up, then create an agent and stack its
+blocks — or describe it and let the composer write them.
 
-1. Open **API Keys** and add your Gemini key.
-2. Create an agent and stack its blocks — or describe it and let the composer write them.
-
-### 3. Load the extension
+### 4. Load the extension
 
 1. Visit `chrome://extensions/`.
 2. Enable **Developer mode** (top right).
 3. Click **Load unpacked** and select the [`BlockAgent/`](BlockAgent/) directory.
-4. Pin **CrewBlocks** from the extensions menu.
+4. Pin **CrewAgent** from the extensions menu.
 
 The side panel targets the hosted API at `https://crewblocks.vercel.app/api/extension` by default
 and switches to `http://localhost:3000/api/extension` automatically when the active tab is on
 localhost. Because requests carry your session cookie, stay signed in to the same origin you are
 pointing at.
 
-### 4. Drive the agent
+### 5. Drive the agent
 
 Open the side panel, pick your agent from the dropdown, and issue commands:
 
 ```text
 Scroll down a bit
-Click the sign in button
 Search for laptops in the search bar
+Go to amazon and find formal shoes under 1000
 Translate this page to Hindi
 Summarise what this page is about
 ```
+
+Use the **Cloud / Local** toggle in the header to move a single run on-device without editing the
+agent. Cloud is both faster and stronger; local is for when nothing may leave the machine.
 
 ---
 
@@ -305,6 +400,7 @@ All extension routes require an authenticated Supabase session and return `401` 
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/api/extension/chat` | Compiles the agent's stack, runs one turn, returns one action as JSON |
+| `POST` | `/api/extension/chat` + `mode: "triage"` | Cheap text-only turn: is this a browser task or just conversation? |
 | `GET` | `/api/extension/models` | Lists agents owned by the user and shared via squads |
 | `GET` | `/api/extension/history` | Returns up to 100 messages for an agent, oldest first |
 | `DELETE` | `/api/extension/history` | Clears an agent's transcript and memory |
@@ -320,44 +416,103 @@ The agent replies with a single JSON object per turn — one action at a time.
 
 | Action | Required fields | Effect |
 |---|---|---|
-| `CLICK` | `elementId` | Clicks the indexed element |
-| `TYPE` | `elementId`, `text` | Types into the indexed field |
+| `CLICK` | `elementId` | Clicks the element. Only ids with `kind: "clickable"` |
+| `TYPE` | `elementId`, `text` | Types into an `kind: "input"` field. `submit: true` presses Enter |
 | `SCROLL` | `direction` (`UP` \| `DOWN`) | Scrolls the window |
-| `NAVIGATE` | `url` | Navigates the tab |
+| `NAVIGATE` | `url` | Navigates the tab, subject to the domain allowlist |
 | `TRANSLATE` | `language` | Translates page text nodes (`as`, `bn`, `brx`, `hi`, `en`) |
-| `ANSWER` | `text` | Replies to the user, or requests input such as an OTP |
+| `SEARCH` | `query` | Live web search. Resolved server-side, never reaches the panel |
+| `READ_URL` | `url` | Extracts one page's text. Also server-side |
+| `SEE` | `text` | Requests a screenshot, with a reason. Capped at 3 per run |
+| `ASK` | `text` | **Suspends** the run and waits for you. Resumes with your reply |
+| `ANSWER` | `text` | Ends the run |
+
+`ASK` takes an `expecting` field that shapes the control the panel renders — `confirmation`,
+`choice` (with `options`), `otp`, `number`, or `text`. A suspended run keeps its budgets; the clock
+stops while it waits for a person.
 
 Two optional fields may accompany any action: `memory`, persisted when a Memory block allows
 writes, and `usedTool`, which surfaces the tool credited for the turn in the UI.
 
 ```json
-{ "action": "TYPE", "elementId": 12, "text": "laptops", "usedTool": "Shopping" }
+{ "action": "TYPE", "elementId": 12, "text": "formal shoes", "submit": true }
+{ "action": "ASK", "text": "Place the order for ₹2,499?", "expecting": "confirmation" }
 ```
+
+**Two guards do not depend on the model choosing to use them.** Before any `CLICK` in `supervised`
+mode the panel matches the *target element's own label* against an irreversible-action pattern —
+buy, pay, place order, delete, transfer — and suspends for a confirmation whatever the model
+intended. And the content script refuses `CLICK` or `TYPE` on a password or card-number field in
+every mode. `model.md` §7 has the measurements that made both necessary.
 
 ---
 
 ## Model Providers
 
-| Provider | Where it is used |
-|---|---|
-| **Google Gemini** | Powers the browser agent, including the Google Search grounding tool |
-| **Sarvam AI** | Selectable provider in the dashboard key vault |
-| **Groq** | Selectable provider in the dashboard key vault |
-| **OpenAI · Anthropic** | Supported by the generic `/api/chat` proxy |
+One open-weight family, two tiers. Both speak an OpenAI-compatible API, so moving between them is
+a base-URL change and nothing else in the app moves.
 
-Translation runs on the **Bhashini** Dhruva inference pipeline.
+| Tier | Model | Runtime | When |
+|---|---|---|---|
+| **Cloud** | `qwen/qwen3-vl-8b-instruct` | OpenRouter | Default. Faster *and* stronger |
+| **On-device** | `mlx-community/Qwen3-VL-4B-Instruct-4bit` | `mlx_vlm.server` on `127.0.0.1:8081` | Nothing leaves the machine |
+| **Legacy** | `gemini-flash-latest`, `gemini-pro-latest` | `@google/genai` | Existing agents keep working |
+
+Cloud being *faster* than local is worth saying out loud: the on-device tier buys privacy, not
+speed. Sizes differ because the machines do — `model.md` §1 has the memory budget behind 8B/4B.
+
+Routing lives in [`Studio/src/lib/providers.ts`](Studio/src/lib/providers.ts); the model-id prefix
+picks the client. Web search runs through **Tavily**, with Brave and DuckDuckGo behind the same
+interface. Translation runs on the **Bhashini** Dhruva pipeline.
+
+---
+
+## Evaluation
+
+```bash
+python3 -m http.server 8000     # from the repo root
+open http://localhost:8000/eval/index.html
+```
+
+No model, no keys, no network. The runner fetches the shipped `content.js` and `sidebar.js` and
+executes the **real** `extractContext` and `elementsForModel` against recorded pages — so it cannot
+pass against code the extension does not run.
+
+| Case | Guards against |
+|---|---|
+| Gmail — compose and send | the Send button falling off the end of the element budget |
+| Amazon — search from the box | typing and clicking being indistinguishable |
+| Cookie banner covering the page | offering controls that are painted over |
+
+Each fixture declares its own expectations in a JSON block — which labels must reach the model,
+with which `kind`, and which junk must not. Adding a case is one HTML file in `eval/fixtures/`.
+
+It earned its place on the first run by catching `<input type="submit">` being classified as
+`kind: "input"`, which would have told the model to type into a Send button.
+
+**What it does not cover yet:** it measures the element table, not the model. Running the 4B and 8B
+tiers against the same fixtures with known-correct actions is the other half, and it is what any
+honest "is the model too small" answer needs.
 
 ---
 
 ## Security Notes
 
-- The extension requests `<all_urls>` host permissions and injects a content script everywhere —
-  necessary for page-level actions, and worth understanding before installing.
-- Page content is transmitted to the backend and on to the model provider on every turn. Close the
-  side panel on sensitive pages.
+- The extension requests `<all_urls>` host permissions and injects a content script into **every
+  frame** of every page — necessary for page-level actions, and worth understanding before
+  installing.
+- Page content is transmitted to the backend and on to the model provider on every turn, unless you
+  are on the on-device tier, where nothing leaves the machine. Close the side panel on sensitive
+  pages, or switch the header toggle to **Local**.
+- **Screenshot redaction is specified but not yet implemented.** The cloud tier currently sends the
+  marked screenshot unredacted when the Vision block asks for one. See `model.md` §8 and §11.
 - Tool blocks can hold payment details. They are stored per user under RLS and only ever reach the
   model provider, but treat an agent you publish or share as if its tool config is visible.
-- The agent never fabricates OTPs and never attempts CAPTCHAs; both are escalated to you.
+- The agent never fabricates OTPs and never attempts CAPTCHAs; both are escalated to you via `ASK`.
+- Password and card-number fields are refused by the content script in every autonomy mode. This is
+  a per-action refusal, not a page-level kill switch, so login flows still work.
+- A live Bhashini subscription key is currently committed as a hardcoded fallback in
+  `translate/route.ts`. Put a real key in `.env.local`, delete the literal, and rotate it.
 - Model keys live in Supabase under the signed-in account, never in the extension bundle.
 - Rendered markdown is sanitised with DOMPurify before it reaches the DOM.
 
@@ -365,4 +520,6 @@ Translation runs on the **Bhashini** Dhruva inference pipeline.
 
 <div align="center">
   <strong>CrewBlocks</strong> — stack it, then let it work.
+  <br />
+  <sub>Every model and perception decision, with the reason it beat the alternative: <a href="model.md">model.md</a></sub>
 </div>
