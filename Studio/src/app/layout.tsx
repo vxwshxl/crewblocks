@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import BubbleTutorial from '@/components/BubbleTutorial';
+import CookieConsent from '@/components/CookieConsent';
 import { absoluteUrl, siteConfig } from "@/lib/site";
 import {
   OrganizationJsonLd,
@@ -128,7 +128,7 @@ export default function RootLayout({
       </head>
       <body className={`${inter.variable} font-sans antialiased bg-background text-foreground`} suppressHydrationWarning>
         {children}
-        <BubbleTutorial />
+        <CookieConsent />
       </body>
     </html>
   );

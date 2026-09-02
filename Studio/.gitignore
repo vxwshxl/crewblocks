@@ -10,6 +10,10 @@
 !.yarn/releases
 !.yarn/versions
 
+# pnpm — local store/cache only; pnpm-lock.yaml and pnpm-workspace.yaml stay tracked
+.pnpm-store/
+.pnpm/
+
 # testing
 /coverage
 

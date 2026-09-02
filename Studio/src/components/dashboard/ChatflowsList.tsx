@@ -197,7 +197,6 @@ export default function ChatflowsList() {
                 <div className="flex items-center gap-3 w-full md:w-auto">
                     <DownloadExtensionBtn />
                     <button
-                        id="tutorial-create-new-btn"
                         onClick={handleCreateNew}
                         className="flex items-center gap-2 bg-secondary text-secondary-foreground h-11 px-5 rounded-full text-sm font-semibold hover:bg-[#D8D8D8] transition-all shadow-sm whitespace-nowrap"
                     >

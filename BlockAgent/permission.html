@@ -6,52 +6,92 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BlockAgent Microphone Permission</title>
     <style>
+        :root {
+            --bg: oklch(0.145 0 0);
+            --elevated: oklch(0.232 0 0);
+            --subtle: oklch(0.178 0 0);
+            --fg: oklch(0.985 0 0);
+            --fg-secondary: oklch(0.708 0 0);
+            --border: oklch(0.269 0 0);
+            --primary: #8C52FE;
+            --primary-fg: #ffffff;
+            --danger: oklch(0.68 0.19 22);
+        }
+
+        * { box-sizing: border-box; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
-            background-color: #000000;
-            color: #fafafa;
+            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+                Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--fg);
             display: flex;
             align-items: center;
             justify-content: center;
             height: 100vh;
             margin: 0;
             text-align: center;
+            -webkit-font-smoothing: antialiased;
         }
 
         .container {
-            background-color: #09090b;
-            padding: 40px;
-            border-radius: 16px;
-            border: 1px solid #27272a;
+            background-color: var(--elevated);
+            padding: 40px 36px;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            box-shadow: 0 12px 32px oklch(0 0 0 / 55%);
             max-width: 400px;
         }
 
+        .icon {
+            width: 60px;
+            height: 60px;
+            margin: 0 auto 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 16px;
+            background: var(--primary);
+            color: #fff;
+            box-shadow: 0 0 22px rgba(140, 82, 254, 0.4);
+        }
+
         h2 {
-            margin-top: 0;
-            color: #22c55e;
+            margin: 0 0 10px;
+            font-size: 20px;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            color: var(--fg);
         }
 
         p {
-            color: #a1a1aa;
-            line-height: 1.5;
+            color: var(--fg-secondary);
+            line-height: 1.6;
+            font-size: 14px;
+            margin: 0 0 12px;
         }
 
-        .success {
-            color: #22c55e;
-            font-weight: bold;
-        }
+        p:last-child { margin-bottom: 0; }
 
-        .error {
-            color: #ef4444;
-            font-weight: bold;
-        }
+        strong { color: var(--fg); }
+
+        .success { color: var(--primary); font-weight: 700; }
+        .error   { color: var(--danger);  font-weight: 700; }
     </style>
 </head>
 
 <body>
     <div class="container" id="content">
+        <div class="icon">
+            <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="22"></line>
+            </svg>
+        </div>
         <h2>Microphone Access Required</h2>
-        <p>BlockAgent Assistant needs microphone access to use the speech-to-text feature.</p>
+        <p>BlockAgent needs microphone access to use the speech-to-text feature.</p>
         <p>Please click <strong>"Allow"</strong> when prompted by your browser.</p>
     </div>
     <script src="permission.js"></script>

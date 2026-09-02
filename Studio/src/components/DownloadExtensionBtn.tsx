@@ -48,9 +48,8 @@ export default function DownloadExtensionBtn() {
             <div className="p-5 space-y-5">
               {/* Download Button */}
               <a
-                href="https://download-directory.github.io/?url=https://github.com/vxwshxl/CrewBlocks/tree/main/BlockAgent"
-                target="_blank"
-                rel="noopener noreferrer"
+                href="/BlockAgent.zip"
+                download="BlockAgent.zip"
                 className="flex items-center justify-center gap-3 w-full bg-[#bbf754] text-[#141414] font-semibold py-3.5 px-6 rounded-full transition-all hover:opacity-90 active:scale-[0.98]"
               >
                 <Download className="w-5 h-5" />
