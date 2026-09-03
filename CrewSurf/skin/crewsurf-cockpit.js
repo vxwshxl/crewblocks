@@ -393,31 +393,29 @@ Actions:
   {"type":"ask","question":"...","sensitive":true}
   {"type":"done","answer":"the final answer for the user"}
 
-Any action may also carry "note":"the fact you just read".
+Those are the only actions. There is no "note" action.
 
 MEMORY — read this twice:
-- You see ONE page per turn. The moment you scroll, switch or open, everything on
-  the page you left is gone from your view forever.
-- "note" is the only thing you keep. Whatever you put there comes back to you
-  every turn afterwards, under FINDINGS.
-- So: never leave a page without a note. Gathering three facts from three sources
-  means three notes. If FINDINGS already answers the task, stop and use "done" —
-  do not go back and re-read a page to check.
+- Every page you visit is kept for you automatically. When you leave a tab, what
+  it said comes back every turn afterwards under WHAT YOUR OTHER TABS ALREADY
+  SAID. You do not have to record anything, and you must not try to.
+- So never re-read a page to check it. If a tab is listed there, you already have
+  it — use what it says.
+- When those sections plus the page in front of you answer the task, use "done".
 
 Rules:
 - "index" must be one of the indices listed in ELEMENTS. Never invent one.
 - Prefer navigate over hunting for a search box when you know the URL.
 - Comparing sources? "open" each one in its own tab, then "switch" between them
-  to read each. Never "navigate" away from a page you still need — that throws
-  the page away and you will have to fetch it again.
+  to read each. One visit per tab is enough — the text is kept for you. Never
+  "navigate" away from a page you still need.
 - TABS lists the tabs you already have. Read one before opening another copy.
 - PAGE TEXT is what is on screen *now*, not the whole page. POSITION tells you
   where you are in it. Scroll only when POSITION says there is page left below
-  and what you need is not on screen. Never scroll twice in a row without taking
-  a note in between — if two scrolls taught you nothing, the answer is not on
-  this page, so switch or answer.
-- When the task is a question you can already answer from the page or FINDINGS,
-  use "done".
+  and what you need is not on screen. If two scrolls teach you nothing, the
+  answer is not on this page, so switch or answer.
+- When the task is a question you can already answer from the page in front of
+  you or from what your other tabs said, use "done".
 - When no page is loaded, either answer with "done" or "navigate" somewhere useful.
 - Greetings and small talk are answered with "done", not by browsing.
 - Never guess a password, OTP, card number or personal detail. Use "ask".
@@ -426,26 +424,80 @@ Rules:
 - The "answer" field is shown to the user as Markdown. Use headings, lists and
   tables where they help, and keep it tight.`;
 
-function buildUserMessage(task, ctx, history, memory, openTabs = [], findings = []) {
+/**
+ * What each tab said, the last time the agent looked at it. Keyed by tab id.
+ *
+ * The agent sees one page per turn, so everything on the tab it leaves is gone
+ * from the prompt the moment it switches. `note` was supposed to bridge that,
+ * but it is optional and a small model simply does not volunteer it — so every
+ * two-source task oscillated: read Hacker News, switch to Lobsters, and Hacker
+ * News is now invisible, which makes switching back the only sensible move.
+ * Forty steps later the run hit the ceiling having read plenty and kept nothing.
+ *
+ * Recording the page ourselves does not depend on the model choosing to.
+ */
+const DIGEST_CHARS = 1400;    // per tab
+const RECALL_CHARS = 5000;    // across all of them, so PAGE TEXT keeps its room
+const pagesRead = new Map();
+
+// Every action the loop can actually run. Anything else is refused before it
+// reaches the page — see the guard in runTask.
+const VERBS = new Set([
+    'click', 'type', 'navigate', 'open', 'switch', 'scroll', 'ask', 'done',
+]);
+
+/**
+ * Files away what is on screen now. Scrolling shows a new slice of the same
+ * page, so a second read of the same URL extends what we hold rather than
+ * replacing it; a new URL in the same tab starts over.
+ */
+function rememberPage(tabId, live, ctx) {
+    if (!ctx?.text) return;
+    const url = live?.url || ctx.url || '';
+    const prev = pagesRead.get(tabId);
+    const samePage = prev && prev.url === url;
+    const text = !samePage
+        ? ctx.text.slice(0, DIGEST_CHARS)
+        : prev.text.includes(ctx.text)
+          ? prev.text
+          : `${prev.text}\n${ctx.text}`.slice(0, DIGEST_CHARS);
+    pagesRead.set(tabId, {
+        title: live?.title || ctx.title || '',
+        url,
+        text,
+    });
+}
+
+function buildUserMessage(task, ctx, history, memory, openTabs = []) {
     const past = history.length
         ? `\nSTEPS SO FAR:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n')}`
         : '';
     const notes = memory ? `\nWHAT YOU KNOW ABOUT THE USER:\n${memory}\n` : '';
 
-    // The agent's own notes, carried across tabs and scrolls. Without this it
-    // has no way to hold three sources in mind at once, and a comparison task
-    // degenerates into re-reading pages it has already read.
-    const learned = findings.length
-        ? `\nFINDINGS — what you have already established:\n${findings.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n`
-        : '';
-
     const tabs = openTabs.length
         ? `\nYOUR OPEN TABS:\n${openTabs.map((t, i) => `[${i}]${t.id === workTabId ? ' (reading)' : ''} ${t.title} — ${t.url}`).join('\n')}\n`
         : '';
 
+    // Every tab except the one rendered in full below. This is what makes a
+    // comparison possible at all: the sources the agent is not looking at right
+    // now stay in front of it, so it can answer instead of going back to look.
+    const elsewhere = openTabs
+        .map((t, i) => ({ i, page: t.id === workTabId ? null : pagesRead.get(t.id) }))
+        .filter((t) => t.page);
+    // Split the recall budget evenly, so opening a seventh tab shortens every
+    // digest rather than crowding out the page in front of the agent.
+    const share = Math.max(400, Math.floor(RECALL_CHARS / Math.max(1, elsewhere.length)));
+    const read = elsewhere.length
+        ? `\nWHAT YOUR OTHER TABS ALREADY SAID — you have read these; do not switch back just to re-read them:\n` +
+          elsewhere
+              .map(({ i, page }) => `--- [${i}] ${page.title} — ${page.url}\n${page.text.slice(0, share)}`)
+              .join('\n') +
+          '\n'
+        : '';
+
     if (!ctx) {
         return `TASK: ${task}
-${notes}${learned}${tabs}
+${notes}${tabs}${read}
 No page is loaded, so there is nothing to read or click yet.
 If the task is conversational, answer it with "done".
 If it needs the web, "navigate" to a page you can work from.${past}
@@ -466,7 +518,7 @@ Reply with one JSON action.`;
         : '';
 
     return `TASK: ${task}
-${notes}${learned}${tabs}
+${notes}${tabs}${read}
 URL: ${ctx.url}
 TITLE: ${ctx.title}
 ${position}
@@ -1214,10 +1266,12 @@ async function runTask(task) {
     const memory = await loadMemory();
     const tier = $('model').value;
     const history = [];
-    const findings = [];        // the agent's own notes, the only thing it keeps
     const started = Date.now();
     let seenText = '';          // last page text, to tell a useful scroll from a stuck one
     let deadScrolls = 0;
+    let reSwitches = 0;         // switches to a tab already read, to catch a thrash
+
+    pagesRead.clear();
 
     $('steps').textContent = '';
     setLive(true, 'Working');
@@ -1279,6 +1333,9 @@ async function runTask(task) {
             }
         }
 
+        // After redaction, so nothing sensitive is held past the turn it was on.
+        rememberPage(workTabId, live, ctx);
+
         let reply;
         try {
             reply = await askModel(
@@ -1288,7 +1345,7 @@ async function runTask(task) {
                     { role: 'system', content: SYSTEM_PROMPT },
                     {
                         role: 'user',
-                        content: buildUserMessage(task, ctx, history, memory, await listAgentTabs(), findings),
+                        content: buildUserMessage(task, ctx, history, memory, await listAgentTabs()),
                     },
                 ],
                 abort?.signal
@@ -1307,13 +1364,16 @@ async function runTask(task) {
             return;
         }
 
-        // Whatever the model says it learned survives the page it learned it on.
-        if (action.note) {
-            const note = String(action.note).slice(0, 240).trim();
-            if (note && !findings.includes(note)) {
-                findings.push(`${(live.title || '').slice(0, 40)} — ${note}`);
-                addStep('Noted', note, 'ok');
-            }
+        // A verb we do not have used to fall through to the page and come back as
+        // "unknown action", one wasted step at a time. Say so in the prompt
+        // instead, where the model can act on it.
+        if (!VERBS.has(action.type)) {
+            addStep('Ignored', `there is no "${action.type}" action`, 'warn');
+            history.push(
+                `"${action.type}" is not an action. Choose one of: ${[...VERBS].join(', ')}. ` +
+                'Pages you have visited are already kept for you.'
+            );
+            continue;
         }
 
         // Two scrolls that turn up the same text mean the page has nothing more
@@ -1326,7 +1386,7 @@ async function runTask(task) {
                 addStep('Scroll', 'refused — nothing new below', 'warn');
                 history.push(
                     'scrolling is not working: the page shows the same text. ' +
-                    'Note what you have, then switch tab or answer.'
+                    'Switch tab or answer with what you have.'
                 );
                 deadScrolls = 0;
                 continue;
@@ -1383,6 +1443,24 @@ async function runTask(task) {
                 history.push(`switch to tab ${action.tab} failed`);
                 continue;
             }
+            // Going back to a tab we have already read, when every tab has been
+            // read, is the oscillation this loop used to die of. Its text is in
+            // the prompt already, so there is nothing to go back for. One
+            // revisit is allowed; the second is refused.
+            const allRead = open.length > 1 && open.every((t) => pagesRead.has(t.id));
+            if (allRead && target.id !== workTabId && pagesRead.has(target.id)) {
+                if (++reSwitches >= 2) {
+                    addStep('Switch', 'refused — every tab is already read', 'warn');
+                    history.push(
+                        'you have already read every open tab, and their text is in ' +
+                        'WHAT YOUR OTHER TABS ALREADY SAID. Answer now with "done".'
+                    );
+                    continue;
+                }
+            } else {
+                reSwitches = 0;
+            }
+
             workTabId = target.id;
             addStep('Switch', target.title || target.url);
             history.push(`switched to ${target.url}`);
@@ -1441,11 +1519,12 @@ async function runTask(task) {
     }
 
     addStep('Stopped', `hit the ${MAX_STEPS}-step limit`, 'err');
+    const visited = [...pagesRead.values()];
     addMessage(
         'agent',
-        findings.length
-            ? `I ran out of steps before finishing, but here is what I did establish:\n\n` +
-              findings.map((f) => `- ${f}`).join('\n')
+        visited.length
+            ? `I ran out of steps before finishing. I did read:\n\n` +
+              visited.map((p) => `- [${p.title || p.url}](${p.url})`).join('\n')
             : `I stopped after ${MAX_STEPS} steps without finishing.`,
         true
     );
