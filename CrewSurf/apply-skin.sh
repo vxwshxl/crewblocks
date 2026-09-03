@@ -98,12 +98,12 @@ if "action" in m and isinstance(m["action"], dict):
 # change below is silently reverted on the next update check.
 m.pop("update_url", None)
 
-# The live preview screenshots a tab the user is *not* looking at.
-# captureVisibleTab cannot do that — by definition it returns the visible tab,
-# which is the cockpit. Page.captureScreenshot over the debugger protocol can,
-# and it is the only API that can. The price is a "CrewSurf is debugging this
-# browser" bar while it is attached; the cockpit attaches only during a run and
-# detaches at the end, and the preview toggle in the header disables it outright.
+# Asking for the debugger permission buys the sharpest live preview: it is the
+# only API that can screenshot a tab the user is not looking at. A browser only
+# grants a permission at *install* time, though, so adding it here does nothing
+# on a profile where this extension is already installed — the check at the end
+# of this script reports which of the two you have. The cockpit works either
+# way: without it the preview mirrors the page's DOM instead.
 perms = m.setdefault("permissions", [])
 if "debugger" not in perms:
     perms.append("debugger")
@@ -225,6 +225,26 @@ for root, _dirs, names in os.walk(target):
             files += 1
 print(f"  {hits} strings across {files} files")
 PY
+
+# ----------------------------------------------------------- preview quality --
+# Which live preview this profile gets, said out loud — the panel used to just
+# fail quietly when the permission was not there.
+echo "Checking the live preview…"
+python3 - "$PROFILE" "$(basename "$(dirname "$TARGET")")" <<'PYCHECK'
+import json, os, sys
+prefs = os.path.join(sys.argv[1], "Default", "Secure Preferences")
+try:
+    ext = json.load(open(prefs))["extensions"]["settings"][sys.argv[2]]
+    granted = (ext.get("granted_permissions") or {}).get("api") or []
+except (OSError, KeyError, ValueError):
+    sys.exit(0)
+if "debugger" in granted:
+    print("  screenshots — the debugger permission is granted.")
+else:
+    print("  DOM mirror — this profile installed the extension before the debugger")
+    print("  permission was asked for, and permissions are only granted at install")
+    print("  time. Nothing to fix; screenshots would need a fresh profile.")
+PYCHECK
 
 echo
 echo "Done. Relaunch ${BRAND} — the new tab is now the CrewSurf cockpit."

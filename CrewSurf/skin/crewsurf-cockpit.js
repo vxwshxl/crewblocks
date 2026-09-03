@@ -27,13 +27,16 @@
  * page destroyed the last, so a price comparison thrashed back and forth
  * re-fetching what it had already seen.
  *
- * The side panel streams a thumbnail of the tab being worked in. That needs the
- * debugger protocol, because captureVisibleTab can only ever return the tab in
- * front — see `captureShot`.
+ * Each cockpit tab is one conversation, and owns its tabs and its tab group
+ * alone — see the sessions block. Two cockpits used to fight over the same page.
+ *
+ * The side panel streams a thumbnail of the tab being worked in. Three ways,
+ * best first, because none of them works everywhere — see `captureShot`.
  */
 
 const MAX_STEPS = 25;          // hard stop; a loop that cannot finish must end
 const MAX_ELEMENTS = 120;      // keep the prompt affordable on the local model
+const MIRROR_LIMIT = 1_500_000;  // markup we will ship back for one preview frame
 const SETTINGS_KEY = 'crewsurf.settings';
 const MEMORY_KEY = 'crewsurf.memory';
 const ACTIVITY_KEY = 'crewsurf.activity';
@@ -242,6 +245,65 @@ function performAction(action) {
     return { ok: false, error: `unknown action ${action.type}` };
 }
 
+/**
+ * Runs inside the target tab. Rebuilds the page as one self-contained document
+ * the cockpit can render in a sandboxed iframe.
+ *
+ * This is the preview that always works: it needs nothing beyond the scripting
+ * permission the agent already uses to read the page, and because it is the
+ * *live* DOM it shows what was typed and what was translated, which a screenshot
+ * of a stale frame would not.
+ *
+ * Everything that could run, fetch on its own, or nest another browser is
+ * stripped. What is left is markup, styling and images, loaded from the site as
+ * a picture is.
+ */
+function mirrorPage(limit) {
+    const doc = document.documentElement.cloneNode(true);
+
+    for (const el of doc.querySelectorAll(
+        'script, noscript, iframe, frame, object, embed, template, link[rel~="preload"], link[rel~="prefetch"]'
+    )) {
+        el.remove();
+    }
+
+    // Cloning copies attributes, not properties, so anything typed into the page
+    // would vanish from the preview. Carry the live values across — the clone
+    // walks in document order, so the two lists line up.
+    const live = document.querySelectorAll('input, textarea, select, option');
+    const copy = doc.querySelectorAll('input, textarea, select, option');
+    for (let i = 0; i < live.length && i < copy.length; i++) {
+        const from = live[i];
+        const to = copy[i];
+        if (from.tagName === 'TEXTAREA') to.textContent = from.value;
+        else if (from.tagName === 'OPTION') to.toggleAttribute('selected', from.selected);
+        else if (from.type === 'checkbox' || from.type === 'radio') to.toggleAttribute('checked', from.checked);
+        else if (from.tagName === 'INPUT') to.setAttribute('value', from.value);
+    }
+
+    let head = doc.querySelector('head');
+    if (!head) {
+        head = document.createElement('head');
+        doc.insertBefore(head, doc.firstChild);
+    }
+
+    // Without this, every relative stylesheet and image in the clone would be
+    // resolved against the extension page and the mirror would render unstyled.
+    const base = document.createElement('base');
+    base.href = location.href;
+    head.insertBefore(base, head.firstChild);
+
+    // Show the page where the agent actually is, and make it inert.
+    const frozen = document.createElement('style');
+    frozen.textContent =
+        'html,body{overflow:hidden!important}' +
+        `body{transform:translateY(-${Math.round(window.scrollY)}px);pointer-events:none}`;
+    head.appendChild(frozen);
+
+    const html = `<!doctype html>${doc.outerHTML}`;
+    return { html: html.length > limit ? null : html, bytes: html.length };
+}
+
 /* ------------------------------------------------------------------ model -- */
 
 const SYSTEM_PROMPT = `You are CrewSurf, an agent that operates a web browser.
@@ -406,12 +468,111 @@ let lastRedaction = null;   // reported into the step log so the pass is visible
 let previewOn = true;       // live thumbnail on/off, header toggle
 let agentTabIds = [];       // every tab this run has opened, in order
 
+/* --------------------------------------------------------------- sessions -- */
+
+/**
+ * One cockpit tab is one conversation, and each owns its own tabs and its own
+ * tab group.
+ *
+ * There used to be no such notion. `workTabId` was picked as "the first real
+ * page in this window", so opening a second cockpit and typing a task into it
+ * adopted the *first* conversation's tab: it navigated the page away mid-run and
+ * dragged it out of the other conversation's group. Ownership is therefore
+ * recorded where every cockpit can see it — a claims table in extension storage,
+ * keyed by session, pruned of sessions whose cockpit tab has since closed.
+ *
+ * Claims are advisory between cockpits, never a lock on the user: any tab is
+ * still one click away, and closing a cockpit releases everything it held.
+ */
+const SESSIONS_KEY = 'crewsurf.sessions';
+// Session storage, not local: tab ids are only unique within one run of the
+// browser, so a claims table that outlived a restart would hand this run's tabs
+// to conversations that ended yesterday. Older builds without it lose only the
+// restart guarantee.
+const sessionStore = chrome.storage.session ?? chrome.storage.local;
+const sessionId = crypto.randomUUID?.() ?? `s${Date.now()}${Math.random()}`;
+let sessionLabel = 'CrewSurf';
+let cockpitTabId = null;
+
+/** The claims table with dead conversations dropped. */
+async function readSessions() {
+    const stored = await sessionStore.get(SESSIONS_KEY);
+    const all = stored[SESSIONS_KEY] || {};
+    const live = {};
+    for (const [id, entry] of Object.entries(all)) {
+        if (id === sessionId) { live[id] = entry; continue; }
+        // A conversation whose cockpit tab is gone cannot own anything any more.
+        // This is also what makes an unclean close safe: nothing has to be
+        // released on the way out for the claim to lapse.
+        const tab = await chrome.tabs.get(entry.cockpitTabId).catch(() => null);
+        if (tab) live[id] = entry;
+    }
+    return live;
+}
+
+/** Records what this conversation owns, and prunes conversations that ended. */
+async function claimTabs() {
+    const live = await readSessions();
+    live[sessionId] = {
+        cockpitTabId,
+        label: sessionLabel,
+        groupId: workGroupId,
+        tabIds: agentTabIds.slice(),
+        at: Date.now(),
+    };
+    await sessionStore.set({ [SESSIONS_KEY]: live });
+    return live;
+}
+
+/** Tab ids another live conversation is working in. We never take one of these. */
+async function foreignTabIds() {
+    const live = await readSessions();
+    const ids = new Set();
+    for (const [id, entry] of Object.entries(live)) {
+        if (id === sessionId) continue;
+        if (entry.cockpitTabId != null) ids.add(entry.cockpitTabId);
+        for (const tabId of entry.tabIds || []) ids.add(tabId);
+    }
+    return ids;
+}
+
+/** Names this conversation after the ones already open: CrewSurf, CrewSurf 2, … */
+async function openSession() {
+    const me = await chrome.tabs.getCurrent();
+    cockpitTabId = me?.id ?? null;
+
+    const live = await readSessions();
+    const taken = new Set(
+        Object.entries(live).filter(([id]) => id !== sessionId).map(([, e]) => e.label)
+    );
+    let n = 1;
+    while (taken.has(n === 1 ? 'CrewSurf' : `CrewSurf ${n}`)) n++;
+    sessionLabel = n === 1 ? 'CrewSurf' : `CrewSurf ${n}`;
+    $('sessionLabel').textContent = n === 1 ? '' : sessionLabel;
+
+    await claimTabs();
+}
+
+async function closeSession() {
+    const stored = await sessionStore.get(SESSIONS_KEY);
+    const all = stored[SESSIONS_KEY] || {};
+    delete all[sessionId];
+    await sessionStore.set({ [SESSIONS_KEY]: all });
+}
+
 /** The agent's own tabs, dead ones dropped, for the prompt and the sidebar. */
 async function listAgentTabs() {
     const live = [];
     for (const id of agentTabIds) {
         const tab = await chrome.tabs.get(id).catch(() => null);
-        if (tab) live.push({ id: tab.id, title: tab.title || '', url: tab.url || '' });
+        if (tab) {
+            live.push({
+                id: tab.id,
+                title: tab.title || '',
+                url: tab.url || '',
+                favIconUrl: tab.favIconUrl || '',
+            });
+        }
     }
     agentTabIds = live.map((t) => t.id);
     return live;
@@ -429,6 +590,7 @@ async function openAgentTab(url) {
     agentTabIds.push(created.id);
     workTabId = created.id;
     await groupWorkTab(created.id, me.windowId);
+    await claimTabs();
     await waitForComplete(created.id);
     return created;
 }
@@ -541,19 +703,38 @@ const setStatus = (t) => { $('status').textContent = t; };
 /**
  * A thumbnail of the tab the agent is working in.
  *
- * `chrome.tabs.captureVisibleTab` is the obvious API and it cannot do this: it
- * returns whichever tab is *visible*, which — now that the work tab is a sibling
- * of the cockpit rather than in its own window — is always the cockpit itself.
- * `Page.captureScreenshot` over the debugger protocol reads a background tab
- * directly, and is the only thing that can.
+ * There is no single API that can do this, so there are three, best first:
  *
- * Attaching shows Chrome's "CrewSurf is debugging this browser" bar, so the
- * attachment is scoped as tightly as possible: only during a run, only to the
- * tab being read, detached the moment the run ends, and skipped entirely when
- * the preview is toggled off.
+ *  1. `chrome.tabs.captureVisibleTab`, when the work tab happens to be the one
+ *     in front. Exact, instant, free — but by definition it can only ever
+ *     return the *visible* tab, and the tab in front is normally the cockpit.
+ *  2. `Page.captureScreenshot` over the debugger protocol, which is the only
+ *     thing that can read a background tab directly. It needs the `debugger`
+ *     permission, and a permission added to an extension that is already
+ *     installed is not granted until the extension is installed afresh — so on
+ *     an existing profile `chrome.debugger` is simply not there. That is what
+ *     used to leave the panel reading "Preview appears while working" for the
+ *     whole run: the attach threw, the catch swallowed it, and nothing said so.
+ *  3. Mirroring the DOM into a sandboxed iframe. Needs nothing beyond the
+ *     scripting permission the agent already uses to read the page, works on any
+ *     background tab, and shows the live state — what was typed, what was
+ *     translated. Not pixel-exact, and that is the trade.
+ *
+ * Whatever happens, the panel says what it is showing. A silent placeholder is
+ * the one outcome that is not allowed.
  */
+const MIRROR_WIDTH = 1200;   // lay the mirror out as a desktop, then scale it down
+const MIRROR_HEIGHT = 750;   // 16:10, matching the .shot box
+
 let dbgTabId = null;
 let shotTimer = null;
+let shotBusy = false;         // a mirror in flight; never queue a second
+let shotMode = '';            // what the panel currently holds: text | img | frame
+let shotNote = null;
+let lastMirror = '';
+const dbgRefused = new Set(); // tabs the debugger would not attach to, so we stop asking
+
+const canDebug = () => typeof chrome.debugger?.attach === 'function';
 
 async function attachDebugger(tabId) {
     if (dbgTabId === tabId) return true;
@@ -574,39 +755,172 @@ async function detachDebugger() {
     try { await chrome.debugger.detach({ tabId: id }); } catch { /* already gone */ }
 }
 
-async function captureShot() {
-    if (!previewOn || workTabId === null) return;
-    const tab = await chrome.tabs.get(workTabId).catch(() => null);
-    if (!tab || !isScriptable(tab.url)) return;
+/* ---- what the panel shows ---- */
 
-    if (!(await attachDebugger(workTabId))) return;
-    try {
-        const res = await chrome.debugger.sendCommand(
-            { tabId: workTabId },
-            'Page.captureScreenshot',
-            { format: 'jpeg', quality: 45 }
-        );
-        if (!res?.data) return;
-        const shot = $('shot');
-        shot.classList.add('has');
-        let img = shot.querySelector('img');
-        if (!img) {
-            shot.textContent = '';
-            img = document.createElement('img');
-            img.alt = 'Live view of the tab CrewSurf is working in';
-            shot.appendChild(img);
-        }
-        img.src = `data:image/jpeg;base64,${res.data}`;
-    } catch {
-        /* a navigation mid-capture just costs one frame */
+function setShotNote(text) {
+    if (shotNote === text) return;
+    shotNote = text;
+    const note = $('shotNote');
+    note.textContent = text || '';
+    note.hidden = !text;
+}
+
+function showPlaceholder(text, note = '') {
+    const shot = $('shot');
+    shot.classList.remove('has');
+    shot.textContent = text;
+    shotMode = 'text';
+    lastMirror = '';
+    setShotNote(note);
+}
+
+function showImage(src, note = '') {
+    const shot = $('shot');
+    if (shotMode !== 'img') {
+        shot.textContent = '';
+        const img = document.createElement('img');
+        img.alt = 'Live view of the tab CrewSurf is working in';
+        shot.appendChild(img);
+        shotMode = 'img';
+        lastMirror = '';
+    }
+    shot.classList.add('has');
+    shot.querySelector('img').src = src;
+    setShotNote(note);
+}
+
+function scaleMirror() {
+    const shot = $('shot');
+    const frame = shot.querySelector('iframe');
+    // Zero while the panel is hidden, and scaling to nothing would leave the
+    // mirror invisible when it comes back.
+    if (frame && shot.clientWidth) {
+        frame.style.transform = `scale(${shot.clientWidth / MIRROR_WIDTH})`;
     }
 }
 
-function startPreview() {
+function showMirror(html, note = '') {
+    const shot = $('shot');
+    if (shotMode !== 'frame') {
+        shot.textContent = '';
+        const frame = document.createElement('iframe');
+        // No scripts, no forms, no navigation, opaque origin — it is a picture.
+        frame.setAttribute('sandbox', '');
+        frame.setAttribute('referrerpolicy', 'no-referrer');
+        frame.setAttribute('tabindex', '-1');
+        frame.setAttribute('aria-hidden', 'true');
+        frame.width = MIRROR_WIDTH;
+        frame.height = MIRROR_HEIGHT;
+        shot.appendChild(frame);
+        shotMode = 'frame';
+    }
+    shot.classList.add('has');
+    scaleMirror();
+    // Reassigning srcdoc reloads the frame, so an unchanged page must not.
+    if (html !== lastMirror) {
+        lastMirror = html;
+        shot.querySelector('iframe').srcdoc = html;
+    }
+    setShotNote(note);
+}
+
+/* ---- the three ways to get a frame ---- */
+
+async function shotFromVisible(tab) {
+    try {
+        const url = await chrome.tabs.captureVisibleTab(tab.windowId, {
+            format: 'jpeg',
+            quality: 60,
+        });
+        if (!url) return false;
+        showImage(url);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function shotFromDebugger(tabId) {
+    if (!(await attachDebugger(tabId))) {
+        dbgRefused.add(tabId);
+        return false;
+    }
+    try {
+        const res = await chrome.debugger.sendCommand(
+            { tabId },
+            'Page.captureScreenshot',
+            { format: 'jpeg', quality: 45 }
+        );
+        if (!res?.data) return false;
+        showImage(`data:image/jpeg;base64,${res.data}`);
+        return true;
+    } catch {
+        return false; // a navigation mid-capture just costs one frame
+    }
+}
+
+async function shotFromDom(tabId) {
+    let mirror;
+    try {
+        const [res] = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: mirrorPage,
+            args: [MIRROR_LIMIT],
+        });
+        mirror = res?.result ?? null;
+    } catch {
+        return false;
+    }
+    if (!mirror) return false;
+
+    if (!mirror.html) {
+        showPlaceholder(
+            'Page too big to preview',
+            `${Math.round(mirror.bytes / 1024)} KB of markup. The run is unaffected.`
+        );
+        return true;
+    }
+    showMirror(mirror.html, 'Rebuilt from the live page, not a screenshot.');
+    return true;
+}
+
+async function captureShot(useDebugger = true) {
+    // Mirroring a page is not free, and a cockpit in a background tab is not
+    // being read. The run carries on regardless; only the picture pauses.
+    if (!previewOn || document.hidden || workTabId === null || shotBusy) return;
+
+    const tabId = workTabId;
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab) return;
+    if (!isScriptable(tab.url)) {
+        showPlaceholder(
+            'Nothing to show yet',
+            tab.url && tab.url !== 'about:blank' ? 'This kind of page cannot be previewed.' : ''
+        );
+        return;
+    }
+
+    shotBusy = true;
+    try {
+        if (tab.active && (await shotFromVisible(tab))) return;
+        if (useDebugger && canDebug() && !dbgRefused.has(tabId) && (await shotFromDebugger(tabId))) return;
+        if (await shotFromDom(tabId)) return;
+        showPlaceholder('Preview unavailable', 'The page would not let CrewSurf read it.');
+    } finally {
+        shotBusy = false;
+    }
+}
+
+/**
+ * `live` is a run in progress: poll faster, and allow the debugger — its
+ * "CrewSurf is debugging this browser" bar is a fair price while the agent is
+ * working, and not one to pay while it is idle.
+ */
+function startPreview(live = true) {
     stopPreview();
     if (!previewOn) return;
-    captureShot();
-    shotTimer = setInterval(captureShot, 1500);
+    captureShot(live);
+    shotTimer = setInterval(() => captureShot(live), live ? 1500 : 5000);
 }
 
 function stopPreview() {
@@ -648,7 +962,7 @@ async function groupWorkTab(tabId, windowId) {
             workGroupId = null;
         }
         workGroupId = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
-        await chrome.tabGroups.update(workGroupId, { title: 'CrewSurf', color: 'green' });
+        await chrome.tabGroups.update(workGroupId, { title: sessionLabel, color: 'green' });
     } catch {
         workGroupId = null; // grouping is a nicety, never a blocker
     }
@@ -661,18 +975,33 @@ async function ensureWorkTab() {
 
     if (workTabId !== null) {
         const live = await chrome.tabs.get(workTabId).catch(() => null);
-        if (live) return live;
+        // A tab we were only previewing is not owned yet, and may have been
+        // claimed by another conversation since we picked it.
+        const owned = agentTabIds.includes(workTabId);
+        if (live && (owned || !(await foreignTabIds()).has(live.id))) {
+            if (!owned) {
+                agentTabIds.push(live.id);
+                await groupWorkTab(live.id, me.windowId);
+                await claimTabs();
+            }
+            return live;
+        }
         workTabId = null;
     }
 
     // Prefer a real page the user already has open — acting on what they are
-    // looking at is almost always what they meant.
+    // looking at is almost always what they meant. But never one another
+    // conversation is working in: adopting it would navigate that page away and
+    // pull it out of the other conversation's group, mid-run.
+    const taken = await foreignTabIds();
     const tabs = await chrome.tabs.query({ windowId: me.windowId });
-    const existing = tabs.find((t) => t.id !== me.id && isScriptable(t.url));
+    const free = tabs.filter((t) => t.id !== me.id && isScriptable(t.url) && !taken.has(t.id));
+    const existing = free.find((t) => t.active) ?? free[0];
     if (existing) {
         workTabId = existing.id;
         if (!agentTabIds.includes(existing.id)) agentTabIds.push(existing.id);
         await groupWorkTab(existing.id, me.windowId);
+        await claimTabs();
         return existing;
     }
 
@@ -685,19 +1014,24 @@ async function ensureWorkTab() {
     workTabId = created.id;
     if (!agentTabIds.includes(created.id)) agentTabIds.push(created.id);
     await groupWorkTab(created.id, me.windowId);
+    await claimTabs();
     return (await waitForComplete(created.id)) ?? created;
 }
 
-/** The agent's tabs, listed so you can jump straight to any of them. */
+/**
+ * This conversation's tabs — not every tab in the window.
+ *
+ * Listing the window meant a second cockpit, and the tabs another conversation
+ * had opened, all showed up here as if this run owned them. The count in the
+ * heading is the point of the panel: one task can be reading four sources at
+ * once, and you should be able to see that at a glance.
+ */
 async function refreshTabList() {
     const list = $('tabList');
     list.textContent = '';
-    const me = await chrome.tabs.getCurrent();
-    if (!me) return;
 
-    const tabs = await chrome.tabs.query({ windowId: me.windowId }).catch(() => []);
-    for (const tab of tabs) {
-        if (tab.id === me.id) continue;         // the cockpit is not "work"
+    const mine = await listAgentTabs();
+    for (const tab of mine) {
         const row = document.createElement('button');
         row.className = 'tabrow' + (tab.id === workTabId ? ' active' : '');
         row.title = tab.url || '';
@@ -714,6 +1048,42 @@ async function refreshTabList() {
         row.addEventListener('click', () => chrome.tabs.update(tab.id, { active: true }));
         list.appendChild(row);
     }
+    $('tabCount').textContent = mine.length ? `· ${mine.length}` : '';
+
+    // Say when another conversation is running, so a tab that was deliberately
+    // left alone does not read as CrewSurf having missed it.
+    const live = await claimTabs();
+    const others = Object.entries(live).filter(([id]) => id !== sessionId);
+    const note = $('tabNote');
+    if (others.length) {
+        const held = others.reduce((sum, [, e]) => sum + (e.tabIds?.length || 0), 0);
+        note.textContent =
+            `${others.length} other conversation${others.length === 1 ? '' : 's'} open` +
+            (held ? `, working in ${held} tab${held === 1 ? '' : 's'} of ${others.length === 1 ? 'its' : 'their'} own.` : '.');
+        note.hidden = false;
+    } else {
+        note.hidden = true;
+    }
+}
+
+/**
+ * The page a task would land on, shown before there is a task.
+ *
+ * Display only: it is not claimed and not grouped, so another conversation is
+ * still free to take it. `ensureWorkTab` does the owning, once there is a run.
+ */
+async function pickPreviewTab() {
+    const me = await chrome.tabs.getCurrent();
+    if (!me || workTabId !== null) return;
+
+    const taken = await foreignTabIds();
+    const tabs = await chrome.tabs.query({ windowId: me.windowId }).catch(() => []);
+    const free = tabs.filter((t) => t.id !== me.id && isScriptable(t.url) && !taken.has(t.id));
+    const candidate = free.find((t) => t.active) ?? free[0];
+    if (!candidate) return;
+
+    workTabId = candidate.id;
+    setWhere(candidate.title, candidate.url, candidate.favIconUrl);
 }
 
 /** Resolves once the tab has finished loading, so there is a DOM to read. */
@@ -1123,7 +1493,8 @@ async function submit(preset) {
         busy = false;
         abort = null;
         $('send').disabled = false;
-        stopPreview();
+        dbgRefused.clear();
+        startPreview(false);   // detaches, and keeps showing where we ended up
         await refreshTabList();
         setLive(false, 'Idle');
         setStatus('');
@@ -1201,6 +1572,7 @@ for (const tab of document.querySelectorAll('.tab')) {
         if (tab.id === 'tab-activity') renderActivity();
         // The live view only makes sense beside the chat.
         $('preview').classList.toggle('on', tab.id === 'tab-chat' && previewOn);
+        scaleMirror();   // it had no width to measure while it was hidden
     });
 }
 
@@ -1208,7 +1580,7 @@ $('previewBtn').addEventListener('click', () => {
     previewOn = !previewOn;
     $('previewBtn').setAttribute('aria-pressed', String(previewOn));
     $('preview').classList.toggle('on', previewOn);
-    if (previewOn) { if (busy) startPreview(); }
+    if (previewOn) startPreview(busy);
     else stopPreview();   // detaches, so the debugging bar goes away
 });
 
@@ -1242,7 +1614,8 @@ $('translate').addEventListener('change', async (e) => {
         busy = false;
         abort = null;
         $('send').disabled = false;
-        stopPreview();
+        dbgRefused.clear();
+        startPreview(false);
         await refreshTabList();
         setLive(false, 'Idle');
         setStatus('');
@@ -1325,13 +1698,22 @@ if (!Recognition) {
 
 /* ------------------------------------------------------------------- boot -- */
 
-window.addEventListener('beforeunload', () => { stopPreview(); });
+window.addEventListener('resize', () => { if (shotMode === 'frame') scaleMirror(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) captureShot(busy); });
+
+window.addEventListener('beforeunload', () => {
+    stopPreview();
+    closeSession();   // best effort; a stale claim is pruned on the next read
+});
 
 (async () => {
     const [settings, memory] = await Promise.all([loadSettings(), loadMemory()]);
     if (!settings.apiKey) setStatus('Add a key in Settings');
     $('memory').value = memory;
     setLive(false, 'Idle');
+    await openSession();
     await refreshTabList();
+    await pickPreviewTab();
+    startPreview(false);
     $('input').focus();
 })();
