@@ -90,6 +90,14 @@ echo "Renaming the app…"
 plutil -replace CFBundleName        -string "$BRAND" "$WORK/Contents/Info.plist"
 plutil -replace CFBundleDisplayName -string "$BRAND" "$WORK/Contents/Info.plist"
 
+# The bundle declares *two* icon sources: CFBundleIconFile (app.icns, which we
+# replace above) and CFBundleIconName, which points at an "AppIcon" entry inside
+# the compiled Assets.car. macOS prefers the asset catalog, so replacing app.icns
+# alone changes nothing — the Dock keeps showing the vendor's mark. Dropping the
+# key makes macOS fall back to app.icns. Rebuilding Assets.car would need Xcode's
+# actool and risks the bundle's other assets, for no extra benefit.
+plutil -remove CFBundleIconName "$WORK/Contents/Info.plist" 2>/dev/null || true
+
 # Helper bundles get display names too — these are what appear in permission
 # prompts and in Activity Monitor's readable column.
 find "$WORK/Contents/Frameworks" -name "Info.plist" -path "*Helper*" -print0 |

@@ -233,11 +233,11 @@ export default function CrewserPanel() {
                     <WayCard
                         icon={Globe}
                         title="Crewser"
-                        body="A separate browser with its own profile, kept out of your everyday windows. Best for long tasks you would rather not watch take over your tabs."
+                        body="A separate browser with its own profile and a chat cockpit on the new tab. Give it a task and it drives its own tabs — reading, clicking and typing."
                     />
                 </div>
                 <p className="text-sm text-muted-foreground mt-5 leading-relaxed">
-                    Crewser is a pinned build of{' '}
+                    Crewser is a rebranded build of{' '}
                     <a
                         href="https://github.com/browseros-ai/BrowserOS"
                         target="_blank"
@@ -247,8 +247,10 @@ export default function CrewserPanel() {
                         BrowserOS
                         <ExternalLink className="w-3 h-3" aria-hidden="true" />
                     </a>{' '}
-                    (AGPL-3.0), installed unmodified. It carries its own agent and its own model
-                    settings — point it at the same OpenRouter or Gemini key you use here.
+                    (AGPL-3.0), carrying its own cockpit and its own model settings. It runs on
+                    Qwen — cloud through OpenRouter, or the local server on this Mac — set from the
+                    gear in the cockpit. Because it is modified, keep it local: redistributing it
+                    would mean publishing the source under the same licence.
                 </p>
             </section>
         </div>

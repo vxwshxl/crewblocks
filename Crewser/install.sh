@@ -93,6 +93,15 @@ cp -R "$STAGED" "$APP"
 # launch into a right-click-Open dance and `open -a` failing silently.
 xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
 
+# macOS caches app icons aggressively, keyed by bundle path. Without a re-register
+# and a Dock restart the old mark survives in the Dock, Spotlight and Finder even
+# though the bundle on disk is correct. The Dock relaunches itself immediately.
+echo "Refreshing the icon cache…"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+  -f "$APP" >/dev/null 2>&1 || true
+touch "$APP"
+killall Dock 2>/dev/null || true
+
 echo
 echo "Launch it from the CrewBlocks dashboard (sidebar → Crewser), or:"
 echo "  open -a \"$APP\""
