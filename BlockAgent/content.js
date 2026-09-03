@@ -329,6 +329,54 @@ function isActionable(el) {
  * Only checked inside the viewport: `boxOf` already returns null for anything
  * scrolled off screen, and those elements are legitimately reachable later.
  */
+/** Enter, as a person would press it. */
+function pressEnter(el) {
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+        el.dispatchEvent(new KeyboardEvent(type, {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true,
+            cancelable: true
+        }));
+    }
+}
+
+/**
+ * Whether a suggestion list is open against this field right now.
+ *
+ * Two consequences when one is, and both break a run: the typed entry is not
+ * committed yet (Gmail discards an uncommitted recipient), and the list is
+ * painted over the fields below, so the occlusion filter correctly drops them
+ * and the model is left with nothing to move on to. It then retries the only
+ * field it can still see, and the repeat guard kills the run.
+ */
+function hasOpenSuggestions(el) {
+    try {
+        if (el.getAttribute('aria-expanded') === 'true') return true;
+
+        const owned = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
+        if (owned) {
+            const root = el.getRootNode() || document;
+            for (const id of owned.split(/\s+/)) {
+                const list = root.getElementById ? root.getElementById(id) : document.getElementById(id);
+                if (list && isVisible(list) && list.getBoundingClientRect().height > 0) return true;
+            }
+        }
+
+        // A combobox with an autocomplete behaviour that did not say so in ARIA.
+        const role = (el.getAttribute('role') || '').toLowerCase();
+        if (role === 'combobox' && el.getAttribute('aria-autocomplete')) {
+            const list = document.querySelector('[role="listbox"]');
+            if (list && isVisible(list) && list.getBoundingClientRect().height > 0) return true;
+        }
+    } catch (e) {
+        /* no suggestions we can prove */
+    }
+    return false;
+}
+
 /**
  * Whether an element is actually on the page.
  *
@@ -741,16 +789,7 @@ function executeCommand(command) {
                         // person would press, so make it available.
                         if (command.submit) {
                             setTimeout(() => {
-                                for (const type of ['keydown', 'keypress', 'keyup']) {
-                                    el.dispatchEvent(new KeyboardEvent(type, {
-                                        key: 'Enter',
-                                        code: 'Enter',
-                                        keyCode: 13,
-                                        which: 13,
-                                        bubbles: true,
-                                        cancelable: true
-                                    }));
-                                }
+                                pressEnter(el);
                                 // Some forms listen for submit rather than Enter.
                                 const form = el.closest && el.closest('form');
                                 if (form && typeof form.requestSubmit === 'function') {
@@ -765,7 +804,20 @@ function executeCommand(command) {
                             return;
                         }
 
-                        setTimeout(() => resolve({ status: "success" }), 300);
+                        // No explicit submit. If typing opened a suggestion list,
+                        // it has to be committed anyway: an uncommitted entry is
+                        // not really entered, and the open list sits on top of the
+                        // rest of the form, so the next turn cannot see the fields
+                        // that come after this one. That is the Gmail recipient
+                        // case, and every autocomplete behaves the same way.
+                        setTimeout(() => {
+                            if (hasOpenSuggestions(el)) {
+                                pressEnter(el);
+                                setTimeout(() => resolve({ status: "success", committed: true }), 250);
+                                return;
+                            }
+                            resolve({ status: "success" });
+                        }, 300);
                     }, 300);
                 } else {
                     console.warn("Element not found for type (ID):", command.elementId);

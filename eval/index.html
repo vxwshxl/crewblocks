@@ -31,6 +31,7 @@ const FIXTURES = [
   'icon-toolbar.html',
   'custom-dropdown.html',
   'long-results.html',
+  'autocomplete-overlay.html',
 ];
 
 // Single source of truth: pull the shipped extractor apart rather than copying it,
@@ -88,6 +89,10 @@ function check(sent, spec) {
     const s = win.document.createElement('script');
     s.textContent = src;
     win.document.body.appendChild(s);
+
+    // A fixture may need the page put into a particular state first — an open
+    // autocomplete, a expanded panel — using the extension's own helpers.
+    if (spec.before && typeof win[spec.before] === 'function') win[spec.before]();
 
     const ctx = win.extractContext();
     const sent = win.elementsForModel(ctx.elements).interactable;

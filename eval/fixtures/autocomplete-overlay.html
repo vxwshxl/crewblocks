@@ -1,0 +1,57 @@
+<!doctype html><meta charset="utf-8">
+<title>Open autocomplete covering the fields below</title>
+<script type="application/json" id="expect">
+{
+  "name": "Autocomplete list covering the rest of the form",
+  "goal": "address the message, then fill in the subject",
+  "before": "commitRecipient",
+  "why": "A suggestion list opened by the agent's own typing covers the fields below it. Occlusion correctly drops them, so unless the entry is committed the model is left with a filled field and a Send button and nothing to move on to.",
+  "expect": [
+    { "label": "To recipients", "kind": "input" },
+    { "label": "Subject", "kind": "input" },
+    { "label": "Message body", "kind": "input" },
+    { "label": "Send", "kind": "clickable" }
+  ],
+  "reject": []
+}
+</script>
+<style>
+  body { margin: 0; font: 14px system-ui; }
+  .row { padding: 12px; border-bottom: 1px solid #ddd; }
+  input { width: 90%; }
+  .body { min-height: 120px; border: 1px solid #ccc; }
+</style>
+<div class="row"><input id="to" aria-label="To recipients" role="combobox"
+     aria-autocomplete="list" aria-controls="sugg" aria-expanded="false"
+     value="jeumachahary07@gmail.com"></div>
+<div class="row"><input id="subj" aria-label="Subject"></div>
+<div class="row"><div class="body" contenteditable="true" aria-label="Message body"></div></div>
+<div class="row"><button>Send</button></div>
+<script>
+  const to = document.getElementById('to');
+
+  // The dropdown a real autocomplete paints over the fields below, open from
+  // the start because the agent's own typing is what opened it.
+  to.setAttribute('aria-expanded', 'true');
+  const list = document.createElement('div');
+  list.id = 'sugg';
+  list.setAttribute('role', 'listbox');
+  list.style.cssText = 'position:absolute;top:40px;left:12px;width:400px;height:180px;' +
+                       'background:#fff;border:1px solid #ccc;z-index:50';
+  list.textContent = 'Jeu Machahary — jeumachahary07@gmail.com';
+  document.body.appendChild(list);
+
+  // Enter commits the highlighted suggestion and closes the list, the way every
+  // autocomplete behaves.
+  to.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    to.setAttribute('aria-expanded', 'false');
+    list.remove();
+  });
+
+  // What the TYPE handler does after typing, using the shipped helpers, so this
+  // fails if that commit ever stops happening.
+  window.commitRecipient = () => {
+    if (window.hasOpenSuggestions(to)) window.pressEnter(to);
+  };
+</script>

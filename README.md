@@ -495,6 +495,7 @@ is that any page with that shape works, not that these nine do.
 | Buttons with icons and no text | a control whose only name is `aria-label` or `title` |
 | Hand-rolled dropdown, disabled controls | offering dead controls as targets |
 | Long result list with controls at the end | ranking running after the cap instead of before |
+| Autocomplete list covering the rest of the form | a suggestion list deleting the fields underneath it |
 
 Capability routing has its own runner, same principle — it extracts `resolveCapability` out of the
 shipped `sidebar.js` rather than importing a copy:

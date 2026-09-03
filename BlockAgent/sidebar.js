@@ -953,7 +953,7 @@ const STOP_REASONS = {
     STEP_BUDGET_EXCEEDED: 'I used up the actions allowed for this run without finishing.',
     TIME_BUDGET_EXCEEDED: 'I ran out of working time for this run without finishing.',
     NO_PROGRESS_LOOP: 'The page stopped changing, so I was going in circles. I stopped instead of looping.',
-    REPEATED_ACTION: 'I was about to repeat an action that had already done nothing. I stopped instead of looping.',
+    REPEATED_ACTION: 'I tried the same thing three times and the page never changed. I stopped instead of looping.',
     CONSECUTIVE_ERRORS: 'Three actions in a row failed, so I stopped rather than keep guessing.',
     BLOCKED_DOMAIN: 'That site is not on this agent’s allowlist, so I did not open it.',
     ACTION_TIMEOUT: 'The page never settled after my last action.',
@@ -981,6 +981,7 @@ function newRun(limits) {
         consecutiveErrors: 0,
         lastActionKey: null,
         lastSignature: null,
+        repeats: 0,
         limits: limits,
         status: 'running',
         pendingAsk: null,
@@ -1502,6 +1503,15 @@ async function settlePage() {
     });
 }
 
+/**
+ * How many times the same action may run against an unchanged page.
+ *
+ * One was too strict: a single repeat ended the run, and the most common reason
+ * for a repeat is a page whose change we could not see rather than an agent that
+ * is genuinely stuck. Three attempts, each one told that the last did nothing.
+ */
+const REPEAT_LIMIT = 3;
+
 function hostAllowed(rawUrl, allowlist) {
     if (!allowlist || !allowlist.length) return true;
     try {
@@ -1680,9 +1690,32 @@ async function runAgentLoop(options) {
             // 7. Guard the action before it touches the page.
             const actionKey = `${data.action}:${data.elementId ?? data.url ?? data.direction ?? ''}`;
             if (actionKey === run.lastActionKey && signature === run.lastSignature) {
-                bankWorkedTime();
-                await finish('REPEATED_ACTION', `It wanted to run ${data.action} again with nothing on the page having changed.`);
-                return;
+                run.repeats = (run.repeats || 0) + 1;
+
+                if (run.repeats >= REPEAT_LIMIT) {
+                    bankWorkedTime();
+                    await finish(
+                        'REPEATED_ACTION',
+                        `It ran ${data.action} ${run.repeats} times with nothing on the page changing.`
+                    );
+                    return;
+                }
+
+                // Not fatal yet. Killing the run on the first repeat threw away
+                // tasks that were going fine, so let it try again — but tell it,
+                // because a retry that does not know the last one failed is just
+                // the same turn twice.
+                chatHistory.push({
+                    role: 'user',
+                    content:
+                        `That ${data.action} changed nothing on the page — attempt ${run.repeats} of ${REPEAT_LIMIT}. ` +
+                        'Either the element was the wrong one, or the effect is not visible yet. ' +
+                        'Re-read the ELEMENTS table: an input already holding the right text is done. ' +
+                        'Prefer a different element or a different action, and ANSWER if you are stuck.'
+                });
+                addActivityLog('system', `Repeat ${run.repeats}/${REPEAT_LIMIT} of ${data.action}`);
+            } else {
+                run.repeats = 0;
             }
 
             const confirm = needsConfirmation(run, data, context);

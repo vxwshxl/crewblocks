@@ -389,7 +389,7 @@ maxSteps 25 · maxWallClock 5 min · maxConsecutiveErrors 3 · actionTimeout 10 
 | Step budget | 25 steps elapsed | `STEP_BUDGET_EXCEEDED` |
 | Working time | 5 minutes of *working* time — time spent waiting on a person does not count (§5) | `TIME_BUDGET_EXCEEDED` |
 | **State repeat** | `hash(url + DOM signature + scrollY)` seen 3× | `NO_PROGRESS_LOOP` |
-| Action repeat | same action + id twice, state unchanged | `REPEATED_ACTION` |
+| Action repeat | same action + id **3 times**, state unchanged, each retry told the last did nothing | `REPEATED_ACTION` |
 | Error streak | 3 failed actions in a row | `CONSECUTIVE_ERRORS` |
 | Action timeout | 10 s with no DOM settle | `ACTION_TIMEOUT` |
 | Bad element | id not in the current element set | `ELEMENT_NOT_FOUND` |
@@ -454,6 +454,33 @@ they reach the repair turn rather than becoming a confidently wrong action.
 `ModelError` now carries the raw reply, and a failed parse logs a truncated sample server-side.
 Without it the failure was undiagnosable, which is exactly how it survived this long: the error
 threw away the only evidence of what the model had said.
+
+**An open autocomplete deletes the rest of the form.** This was the constant interrupt, and the
+cause was not the model at all. Typing a recipient opens a suggestion list, and that list is painted
+over the fields below it — so the occlusion filter does exactly what it should and drops them.
+Measured on a Gmail-shaped fixture:
+
+| Suggestion list | What the model receives |
+|---|---|
+| closed | `To recipients, Subject, Message body, Send` |
+| **open** | `To recipients, Send` |
+
+With the list open the model has a field that is already filled and a Send button. Subject and the
+body are not merely hard to reach, they are *absent* from its table. Retrying the one field it can
+still see is the only move left, and the repeat guard then ended the run — on a task that was going
+perfectly.
+
+The content script now commits an open suggestion list after typing (`hasOpenSuggestions` →
+`pressEnter`). That is what a person does, it is required anyway — an uncommitted recipient is
+discarded by Gmail — and it closes the list so the rest of the form comes back.
+`eval/fixtures/autocomplete-overlay.html` locks it in, driving the shipped helpers so the case fails
+if the commit ever stops happening.
+
+**A repeat is no longer fatal on the first try.** One repeat ending the run threw away tasks that
+were fine; the commonest cause of a repeat is a page change we could not see, not an agent that is
+stuck. The limit is now three identical attempts, and each retry is *told* that the last one changed
+nothing and reminded that a field already holding the right text is done. A retry that does not know
+the previous one failed is just the same turn twice.
 
 **The state hash is the important one.** Nearly every real agent deadlock is *"the page didn't
 change and the model tried the same thing again."* A step budget alone burns all 25 steps
