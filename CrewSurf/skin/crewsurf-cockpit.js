@@ -34,7 +34,7 @@
  * best first, because none of them works everywhere — see `captureShot`.
  */
 
-const MAX_STEPS = 25;          // hard stop; a loop that cannot finish must end
+const MAX_STEPS = 40;          // hard stop; a loop that cannot finish must end
 const MAX_ELEMENTS = 120;      // keep the prompt affordable on the local model
 const MIRROR_LIMIT = 1_500_000;  // markup we will ship back for one preview frame
 const SETTINGS_KEY = 'crewsurf.settings';
@@ -145,11 +145,61 @@ function extractPageContext(limit) {
         });
     }
 
+    // Text from *where the page is scrolled to*, not from the top.
+    //
+    // This used to be `body.innerText.slice(0, 6000)` — the first 6000 characters
+    // of the document, every turn, no matter where the agent had scrolled. So
+    // scrolling changed nothing the model could see: it scrolled, got a
+    // byte-identical observation, concluded it still had not found what it was
+    // after, and scrolled again until the step ceiling. Reading the blocks near
+    // the viewport is what makes `scroll` a real action.
+    const BLOCKS = 'h1,h2,h3,h4,h5,p,li,td,th,dd,dt,blockquote,pre,figcaption,caption';
+    const CHROME = 'nav,aside,header,footer,[role="navigation"],[role="banner"],[role="contentinfo"],[role="complementary"]';
+
+    // Read the article, not the furniture. A sticky sidebar or a table of
+    // contents sits in the viewport at *every* scroll position, so without this
+    // the first thousand characters of every single turn are the same menu —
+    // the identical-observation problem again, one level down.
+    const root = document.querySelector('main, [role="main"], article') || document.body;
+
+    const near = [];
+    let used = 0;
+    for (const el of root.querySelectorAll(BLOCKS)) {
+        if (used >= 6000) break;
+        const rect = el.getBoundingClientRect();
+        if (rect.bottom < -800 || rect.top > window.innerHeight + 800) continue;
+        if (el.querySelector(BLOCKS)) continue;          // keep the leaf, not its wrapper
+        if (el.closest(CHROME)) continue;
+        const line = (el.innerText || '').replace(/\s+/g, ' ').trim();
+        if (!line) continue;
+        near.push(line);
+        used += line.length;
+    }
+
+    // A page with no recognisable blocks at all — a canvas app, an odd SPA —
+    // still has to return something, so fall back to the old whole-body read.
+    const text = near.length
+        ? near.join('\n')
+        : (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 6000);
+
+    const height = Math.max(
+        document.documentElement.scrollHeight,
+        document.body?.scrollHeight || 0
+    );
+    const room = Math.max(0, height - window.innerHeight);
+
     return {
         url: location.href,
         title: document.title,
-        text: (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 6000),
+        text,
         elements,
+        scroll: {
+            y: Math.round(window.scrollY),
+            height: Math.round(height),
+            viewport: Math.round(window.innerHeight),
+            percent: room ? Math.round((window.scrollY / room) * 100) : 100,
+            atEnd: window.scrollY >= room - 4,
+        },
     };
 }
 
@@ -221,6 +271,20 @@ function performAction(action) {
         const el = find(action.index);
         if (!el) return { ok: false, error: `no element ${action.index}` };
         el.focus();
+
+        // Rich-text editors — Notion, Keep, most CMS bodies — are contenteditable,
+        // not <input>, and the value setter below does nothing to them.
+        // execCommand is deprecated and still the only call that inserts text
+        // *and* fires the input events those editors listen for.
+        if (el.isContentEditable) {
+            const ok = document.execCommand('insertText', false, action.text);
+            if (!ok) {
+                el.textContent = (el.textContent || '') + action.text;
+                el.dispatchEvent(new InputEvent('input', { bubbles: true, data: action.text }));
+            }
+            return { ok: true };
+        }
+
         const setter = Object.getOwnPropertyDescriptor(
             el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
             'value'
@@ -294,10 +358,18 @@ function mirrorPage(limit) {
     head.insertBefore(base, head.firstChild);
 
     // Show the page where the agent actually is, and make it inert.
+    //
+    // Offset by a *ratio*, not by a pixel count. The mirror lays out at 1200px
+    // and the real tab does not, so the same scrollY lands somewhere else in the
+    // clone — far enough down a long article to push the visible strip past the
+    // end of the content and render the preview blank. A percentage translate
+    // resolves against the mirror's own height, so it cannot overshoot.
+    const room = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+    const ratio = Math.min(1, Math.max(0, window.scrollY / room)).toFixed(4);
     const frozen = document.createElement('style');
     frozen.textContent =
         'html,body{overflow:hidden!important}' +
-        `body{transform:translateY(-${Math.round(window.scrollY)}px);pointer-events:none}`;
+        `body{transform:translateY(calc(${ratio} * (750px - 100%)));pointer-events:none}`;
     head.appendChild(frozen);
 
     const html = `<!doctype html>${doc.outerHTML}`;
@@ -321,6 +393,17 @@ Actions:
   {"type":"ask","question":"...","sensitive":true}
   {"type":"done","answer":"the final answer for the user"}
 
+Any action may also carry "note":"the fact you just read".
+
+MEMORY — read this twice:
+- You see ONE page per turn. The moment you scroll, switch or open, everything on
+  the page you left is gone from your view forever.
+- "note" is the only thing you keep. Whatever you put there comes back to you
+  every turn afterwards, under FINDINGS.
+- So: never leave a page without a note. Gathering three facts from three sources
+  means three notes. If FINDINGS already answers the task, stop and use "done" —
+  do not go back and re-read a page to check.
+
 Rules:
 - "index" must be one of the indices listed in ELEMENTS. Never invent one.
 - Prefer navigate over hunting for a search box when you know the URL.
@@ -328,7 +411,13 @@ Rules:
   to read each. Never "navigate" away from a page you still need — that throws
   the page away and you will have to fetch it again.
 - TABS lists the tabs you already have. Read one before opening another copy.
-- When the task is a question you can already answer from the page, use "done".
+- PAGE TEXT is what is on screen *now*, not the whole page. POSITION tells you
+  where you are in it. Scroll only when POSITION says there is page left below
+  and what you need is not on screen. Never scroll twice in a row without taking
+  a note in between — if two scrolls taught you nothing, the answer is not on
+  this page, so switch or answer.
+- When the task is a question you can already answer from the page or FINDINGS,
+  use "done".
 - When no page is loaded, either answer with "done" or "navigate" somewhere useful.
 - Greetings and small talk are answered with "done", not by browsing.
 - Never guess a password, OTP, card number or personal detail. Use "ask".
@@ -337,11 +426,18 @@ Rules:
 - The "answer" field is shown to the user as Markdown. Use headings, lists and
   tables where they help, and keep it tight.`;
 
-function buildUserMessage(task, ctx, history, memory, openTabs = []) {
+function buildUserMessage(task, ctx, history, memory, openTabs = [], findings = []) {
     const past = history.length
         ? `\nSTEPS SO FAR:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n')}`
         : '';
     const notes = memory ? `\nWHAT YOU KNOW ABOUT THE USER:\n${memory}\n` : '';
+
+    // The agent's own notes, carried across tabs and scrolls. Without this it
+    // has no way to hold three sources in mind at once, and a comparison task
+    // degenerates into re-reading pages it has already read.
+    const learned = findings.length
+        ? `\nFINDINGS — what you have already established:\n${findings.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n`
+        : '';
 
     const tabs = openTabs.length
         ? `\nYOUR OPEN TABS:\n${openTabs.map((t, i) => `[${i}]${t.id === workTabId ? ' (reading)' : ''} ${t.title} — ${t.url}`).join('\n')}\n`
@@ -349,7 +445,7 @@ function buildUserMessage(task, ctx, history, memory, openTabs = []) {
 
     if (!ctx) {
         return `TASK: ${task}
-${notes}${tabs}
+${notes}${learned}${tabs}
 No page is loaded, so there is nothing to read or click yet.
 If the task is conversational, answer it with "done".
 If it needs the web, "navigate" to a page you can work from.${past}
@@ -361,15 +457,24 @@ Reply with one JSON action.`;
         .map((e) => `[${e.i}] <${e.tag}${e.type ? ' ' + e.type : ''}> ${e.name}`)
         .join('\n');
 
+    const s = ctx.scroll;
+    const position = s
+        ? `POSITION: ${s.percent}% down the page (${s.y}px of ${s.height}). ` +
+          (s.atEnd
+              ? 'You are at the BOTTOM — scrolling again shows nothing new.'
+              : `About ${Math.max(0, Math.round((s.height - s.viewport - s.y) / s.viewport))} more screens below.`)
+        : '';
+
     return `TASK: ${task}
-${notes}${tabs}
+${notes}${learned}${tabs}
 URL: ${ctx.url}
 TITLE: ${ctx.title}
+${position}
 
 ELEMENTS:
 ${elements || '(none)'}
 
-PAGE TEXT:
+PAGE TEXT (what is on screen now):
 ${ctx.text.slice(0, 3500)}${past}
 
 Reply with one JSON action.`;
@@ -1109,7 +1214,10 @@ async function runTask(task) {
     const memory = await loadMemory();
     const tier = $('model').value;
     const history = [];
+    const findings = [];        // the agent's own notes, the only thing it keeps
     const started = Date.now();
+    let seenText = '';          // last page text, to tell a useful scroll from a stuck one
+    let deadScrolls = 0;
 
     $('steps').textContent = '';
     setLive(true, 'Working');
@@ -1178,7 +1286,10 @@ async function runTask(task) {
                 tier,
                 [
                     { role: 'system', content: SYSTEM_PROMPT },
-                    { role: 'user', content: buildUserMessage(task, ctx, history, memory, await listAgentTabs()) },
+                    {
+                        role: 'user',
+                        content: buildUserMessage(task, ctx, history, memory, await listAgentTabs(), findings),
+                    },
                 ],
                 abort?.signal
             );
@@ -1195,6 +1306,35 @@ async function runTask(task) {
             addMessage('agent', "I couldn't read the model's reply as an action.", true);
             return;
         }
+
+        // Whatever the model says it learned survives the page it learned it on.
+        if (action.note) {
+            const note = String(action.note).slice(0, 240).trim();
+            if (note && !findings.includes(note)) {
+                findings.push(`${(live.title || '').slice(0, 40)} — ${note}`);
+                addStep('Noted', note, 'ok');
+            }
+        }
+
+        // Two scrolls that turn up the same text mean the page has nothing more
+        // to give, whatever the model believes. Telling it so in the prompt is
+        // advice; refusing the action is what actually ends the loop.
+        if (action.type === 'scroll') {
+            const same = ctx?.text === seenText;
+            deadScrolls = same ? deadScrolls + 1 : 0;
+            if (deadScrolls >= 2 || ctx?.scroll?.atEnd) {
+                addStep('Scroll', 'refused — nothing new below', 'warn');
+                history.push(
+                    'scrolling is not working: the page shows the same text. ' +
+                    'Note what you have, then switch tab or answer.'
+                );
+                deadScrolls = 0;
+                continue;
+            }
+        } else {
+            deadScrolls = 0;
+        }
+        seenText = ctx?.text ?? '';
 
         if (action.type === 'ask') {
             const answer = await askUser(
@@ -1288,7 +1428,7 @@ async function runTask(task) {
         if (outcome?.result?.ok) {
             const label = ctx?.elements?.[action.index]?.name || '';
             addStep(action.type[0].toUpperCase() + action.type.slice(1), label || why);
-            history.push(`${action.type} ${label}`.trim());
+            history.push(`${action.type} ${label || why}`.trim());
             // A click or submit often starts a navigation. Let it begin, then
             // wait properly rather than guessing at a delay.
             await sleep(400);
@@ -1301,7 +1441,14 @@ async function runTask(task) {
     }
 
     addStep('Stopped', `hit the ${MAX_STEPS}-step limit`, 'err');
-    addMessage('agent', `I stopped after ${MAX_STEPS} steps without finishing.`, true);
+    addMessage(
+        'agent',
+        findings.length
+            ? `I ran out of steps before finishing, but here is what I did establish:\n\n` +
+              findings.map((f) => `- ${f}`).join('\n')
+            : `I stopped after ${MAX_STEPS} steps without finishing.`,
+        true
+    );
 }
 
 /* -------------------------------------------------------------- translate -- */
