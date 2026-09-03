@@ -2,229 +2,345 @@
 <meta charset="utf-8">
 <title>CrewSurf</title>
 <style>
-  /* Light by deliberate choice — CrewSurf sits beside pages that are mostly
-     light, and a dark cockpit next to a white page is a flashbang every time
-     the preview updates. */
+  /* Palette: the house gray ramp, mapped onto Geist's step semantics — 100/200
+     backgrounds, 200-400 borders, 900/1000 text. Accent is the CrewBlocks lime,
+     the same one the Download Extension button uses, on near-black text.
+
+     Light on purpose: CrewSurf sits beside a live thumbnail of a real page, and
+     a dark chrome around a white screenshot is a flashbang on every refresh. */
   :root {
-    --bg:        #ffffff;
-    --sunken:    #f6f6f7;
-    --surface:   #ffffff;
-    --border:    #e6e6e8;
-    --border-2:  #d3d3d7;
-    --fg:        #17171a;
-    --muted:     #6b6b73;
-    --faint:     #9a9aa2;
-    --accent:    #d6217f;
-    --accent-fg: #ffffff;
-    --accent-wash:#fdeef6;
-    --ok:        #157f4d;
-    --warn:      #8a6100;
-    --danger:    #c02626;
-    --r:         12px;
-    --motion:    120ms cubic-bezier(0.2, 0, 0, 1);
+    --bg-100:   #FFFFFF;   /* default surface        */
+    --bg-200:   #FAFAFA;   /* secondary surface      */
+    --gray-100: #F2F2F2;   /* hover background       */
+    --gray-200: #EBEBEB;   /* active bg · default border */
+    --gray-300: #DCDCDC;   /* hover border           */
+    --gray-400: #A1A1A1;   /* active border          */
+    --gray-900: #727272;   /* secondary text + icons */
+    --gray-1000:#171717;   /* primary text + icons   */
+
+    --accent:      #B7F34C;
+    --accent-fg:   #0A0A0A;
+    --accent-wash: #F4FCE3;
+    --accent-line: #8FD117;   /* lime is too light to read as a border */
+
+    --ok:     #0F7B47;
+    --warn:   #A35C00;
+    --danger: #C0362C;
+
+    --r-sm: 4px; --r-md: 6px; --r-lg: 10px; --r-xl: 16px;
+    --motion: 120ms cubic-bezier(0.2, 0, 0, 1);
   }
+
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
-    margin: 0; background: var(--bg); color: var(--fg);
+    margin: 0; background: var(--bg-100); color: var(--gray-1000);
     font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     display: flex; flex-direction: column; overflow: hidden;
   }
   button, select, input, textarea { font: inherit; color: inherit; }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
-  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  :focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; border-radius: var(--r-md); }
+  svg { display: block; flex: none; }
+  .ico { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 
   /* ------------------------------------------------------------- header -- */
   header {
-    display: flex; align-items: center; gap: 10px; flex: none;
-    padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--surface);
+    display: flex; align-items: center; gap: 8px; flex: none;
+    height: 56px; padding: 0 16px; border-bottom: 1px solid var(--gray-200); background: var(--bg-100);
   }
-  header img { width: 22px; height: 22px; border-radius: 6px; }
-  .brand { font-weight: 660; letter-spacing: -0.01em; margin-right: 6px; }
+  .mark { width: 24px; height: 24px; border-radius: var(--r-md); }
+  .wordmark { font-weight: 600; letter-spacing: -0.01em; margin-right: 8px; }
   .grow { flex: 1; }
-  .pill {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
-    padding: 7px 12px; min-height: 34px; cursor: pointer; transition: border-color var(--motion);
+
+  .select {
+    appearance: none; background: var(--bg-100); border: 1px solid var(--gray-200);
+    border-radius: var(--r-lg); padding: 0 28px 0 12px; height: 32px; cursor: pointer;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23727272' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 8px center;
+    transition: border-color var(--motion);
   }
-  .pill:hover { border-color: var(--border-2); }
-  .iconbtn {
-    background: transparent; border: 1px solid transparent; border-radius: 999px;
-    width: 34px; height: 34px; cursor: pointer; color: var(--muted);
+  .select:hover { border-color: var(--gray-300); }
+
+  .icobtn {
+    background: transparent; border: 1px solid transparent; border-radius: var(--r-lg);
+    width: 32px; height: 32px; cursor: pointer; color: var(--gray-900);
     display: grid; place-items: center; transition: all var(--motion);
   }
-  .iconbtn:hover { background: var(--sunken); color: var(--fg); }
-  .iconbtn[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+  .icobtn:hover { background: var(--gray-100); color: var(--gray-1000); }
+  .icobtn[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+  .icobtn:disabled { opacity: .4; cursor: not-allowed; }
+
+  .status { font-size: 12px; color: var(--gray-900); font-variant-numeric: tabular-nums; }
 
   /* --------------------------------------------------------------- tabs -- */
-  .tabs { display: flex; gap: 4px; padding: 10px 18px 0; border-bottom: 1px solid var(--border); background: var(--surface); flex: none; }
+  .tabs { display: flex; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--gray-200); background: var(--bg-100); flex: none; }
   .tab {
     background: none; border: none; border-bottom: 2px solid transparent;
-    padding: 8px 12px 10px; cursor: pointer; color: var(--muted); font-weight: 550;
-    transition: all var(--motion);
+    padding: 10px 12px; margin-bottom: -1px; cursor: pointer;
+    color: var(--gray-900); font-weight: 500; transition: color var(--motion);
   }
-  .tab:hover { color: var(--fg); }
-  .tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab:hover { color: var(--gray-1000); }
+  .tab[aria-selected="true"] { color: var(--gray-1000); border-bottom-color: var(--accent-line); }
 
   /* ---------------------------------------------------------- workspace -- */
   .work { flex: 1; display: flex; min-height: 0; }
-  .panel { flex: 1; overflow-y: auto; padding: 22px; min-width: 0; }
+  .panel { flex: 1; overflow-y: auto; padding: 24px 20px; min-width: 0; }
   .col { max-width: 720px; margin: 0 auto; }
 
   /* ------------------------------------------------------------ preview -- */
   aside {
-    width: 340px; flex: none; border-left: 1px solid var(--border);
-    background: var(--sunken); padding: 16px; overflow-y: auto; display: none;
+    width: 344px; flex: none; border-left: 1px solid var(--gray-200);
+    background: var(--bg-200); padding: 16px; display: none;
+    flex-direction: column; min-height: 0;
   }
-  aside.on { display: block; }
-  .live { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700;
-          letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
-  .dot.run { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.35 } }
+  aside.on { display: flex; }
+  .pinned { flex: none; }
+  .live {
+    display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 600;
+    letter-spacing: .06em; text-transform: uppercase; color: var(--gray-900); margin-bottom: 12px;
+  }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gray-400); }
+  .dot.run { background: var(--accent-line); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
   @media (prefers-reduced-motion: reduce) { .dot.run { animation: none } }
 
   .shot {
-    width: 100%; aspect-ratio: 16 / 10; border-radius: 10px; border: 1px solid var(--border);
-    background: var(--surface) center/cover no-repeat; display: grid; place-items: center;
-    color: var(--faint); font-size: 12px; overflow: hidden; margin-bottom: 10px;
+    width: 100%; aspect-ratio: 16 / 10; border-radius: var(--r-lg);
+    border: 1px solid var(--gray-200); background: var(--bg-100);
+    display: grid; place-items: center; text-align: center;
+    color: var(--gray-400); font-size: 12px; padding: 0 16px;
+    overflow: hidden; margin-bottom: 8px;
   }
-  .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; display: block; }
-  .where { font-size: 12px; color: var(--muted); word-break: break-all; margin-bottom: 12px; }
-  .where b { color: var(--fg); font-weight: 600; display: block; }
+  .shot.has { padding: 0; border-color: var(--gray-300); }
+  .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
 
-  .steps { border-top: 1px solid var(--border); padding-top: 12px; }
-  .step { display: flex; gap: 8px; padding: 5px 0; font-size: 13px; color: var(--muted); }
-  .step .k { color: var(--fg); font-weight: 600; flex: none; }
-  .step.err { color: var(--danger); }
-  .step.err .k { color: var(--danger); }
+  .nowcard {
+    display: flex; gap: 10px; align-items: flex-start; padding: 12px;
+    border: 1px solid var(--gray-200); border-radius: var(--r-lg);
+    background: var(--bg-100); margin-bottom: 4px;
+  }
+  .fav.lg { width: 16px; height: 16px; margin-top: 2px; }
+  .nowtext { min-width: 0; font-size: 12px; color: var(--gray-900); }
+  .nowtext b { display: block; color: var(--gray-1000); font-weight: 500; margin-bottom: 2px;
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nowtext span { word-break: break-all; }
 
-  .asideRow { display: flex; gap: 8px; margin-top: 14px; }
-  .asideRow .pill { flex: 1; text-align: center; }
+  /* Inline permission prompt — the agent stops and asks rather than typing a
+     secret it guessed. Styled as a distinct object, not another chat bubble. */
+  .prompt {
+    border: 1px solid var(--gray-300); border-left: 3px solid var(--warn);
+    border-radius: 0 var(--r-lg) var(--r-lg) 0; padding: 14px 16px; margin: 0 0 24px;
+    background: var(--bg-200);
+  }
+  .prompt .q { font-weight: 500; margin: 0 0 4px; }
+  .prompt .sub { font-size: 12.5px; color: var(--gray-900); margin: 0 0 12px; }
+  .prompt .field { display: flex; gap: 8px; }
+  .prompt input {
+    flex: 1; border: 1px solid var(--gray-300); border-radius: var(--r-lg);
+    padding: 8px 12px; height: 36px; background: var(--bg-100); outline: none;
+  }
+  .prompt input:focus { border-color: var(--gray-400); }
+  .prompt.done { border-left-color: var(--ok); opacity: .7; }
+  .prompt.done .field { display: none; }
+
+  .section {
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--gray-900); margin: 16px 0 8px; padding-top: 12px;
+    border-top: 1px solid var(--gray-200);
+  }
+  .tablist { display: flex; flex-direction: column; gap: 2px; max-height: 168px; overflow-y: auto; }
+  .tabrow {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    background: none; border: none; border-radius: var(--r-md); padding: 6px 8px;
+    cursor: pointer; color: var(--gray-1000); font-size: 13px; min-height: 32px;
+    transition: background var(--motion);
+  }
+  .tabrow:hover { background: var(--gray-100); }
+  .tabrow.active { background: var(--accent-wash); }
+  .tabrow span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fav { width: 14px; height: 14px; flex: none; border-radius: 3px; }
+  .tablist:empty::after {
+    content: 'No tabs yet'; color: var(--gray-400); font-size: 12px; padding: 4px 8px;
+  }
+
+  /* Scrolls like a live chat: fixed height, newest at the bottom, so a long run
+     never pushes the preview out of view. */
+  .steps {
+    display: flex; flex-direction: column; gap: 1px;
+    flex: 1; min-height: 90px; overflow-y: auto;
+    scrollbar-width: thin;
+  }
+  .steps::-webkit-scrollbar { width: 6px; }
+  .steps::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 3px; }
+  .step { display: flex; gap: 8px; padding: 4px 0; font-size: 13px; color: var(--gray-900); }
+  .step .k { color: var(--gray-1000); font-weight: 500; flex: none; }
+  .step.err, .step.err .k { color: var(--danger); }
+  .step.warn, .step.warn .k { color: var(--warn); }
+  .step.ok .k { color: var(--ok); }
+
+  .asideRow { display: flex; gap: 8px; margin-top: 16px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    border-radius: var(--r-lg); padding: 0 14px; height: 36px; cursor: pointer;
+    border: 1px solid var(--gray-200); background: var(--bg-100); color: var(--gray-1000);
+    transition: all var(--motion); white-space: nowrap;
+  }
+  .btn:hover { background: var(--gray-100); border-color: var(--gray-300); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 500; }
+  .btn.primary:hover { filter: brightness(1.05); background: var(--accent); }
+  .asideRow .btn { flex: 1; }
 
   /* ------------------------------------------------------------- thread -- */
-  .hero { text-align: center; padding: 40px 0 28px; }
-  .hero img { width: 52px; height: 52px; border-radius: 13px; margin-bottom: 16px; }
-  .hero h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.02em; font-weight: 660; }
-  .hero p { color: var(--muted); margin: 0 auto; max-width: 430px; }
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 22px; }
+  .hero { text-align: center; padding: 48px 0 32px; }
+  .hero img { width: 48px; height: 48px; border-radius: 12px; margin-bottom: 20px; }
+  .hero h1 { font-size: 24px; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.02em; font-weight: 600; }
+  .hero p { color: var(--gray-900); margin: 0 auto; max-width: 420px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 24px; }
   .chip {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
-    padding: 8px 14px; cursor: pointer; min-height: 36px; transition: all var(--motion);
+    background: var(--bg-100); border: 1px solid var(--gray-200); border-radius: var(--r-lg);
+    padding: 0 14px; height: 36px; cursor: pointer; transition: all var(--motion);
   }
-  .chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
+  .chip:hover { border-color: var(--accent-line); background: var(--accent-wash); }
 
-  .msg { display: flex; gap: 11px; margin-bottom: 20px; }
-  .avatar {
-    flex: none; width: 25px; height: 25px; border-radius: 7px; display: grid; place-items: center;
-    font-size: 10px; font-weight: 700; margin-top: 3px;
+  /* Chat reads as a conversation, not a log: what you said sits right and
+     tinted, what the agent said sits left and plain, so the eye can follow one
+     side down the page. No avatars — at two participants they are noise. */
+  .row { display: flex; margin-bottom: 18px; }
+  .row.user { justify-content: flex-end; }
+  .row.agent { justify-content: flex-start; }
+  .bubble { max-width: 82%; min-width: 0; }
+  .row.user .bubble {
+    background: var(--accent-wash); border: 1px solid var(--accent-line);
+    border-radius: var(--r-xl) var(--r-xl) var(--r-sm) var(--r-xl);
+    padding: 10px 14px; white-space: pre-wrap; overflow-wrap: anywhere;
   }
-  .msg.user .avatar { background: var(--sunken); color: var(--muted); border: 1px solid var(--border); }
-  .msg.agent .avatar { background: var(--accent); color: var(--accent-fg); }
-  .bubble { flex: 1; min-width: 0; }
+  .row.agent .bubble { padding-top: 2px; }
 
   /* markdown */
   .md > *:first-child { margin-top: 0; }
-  .md > *:last-child { margin-bottom: 0; }
-  .md h1, .md h2, .md h3 { font-size: 15px; font-weight: 660; margin: 18px 0 8px; letter-spacing: -0.01em; }
-  .md p { margin: 0 0 10px; }
-  .md ul, .md ol { margin: 0 0 10px; padding-left: 22px; }
+  .md > *:last-child  { margin-bottom: 0; }
+  .md h3, .md h4, .md h5, .md h6 { font-size: 15px; font-weight: 600; margin: 20px 0 8px; letter-spacing: -0.01em; }
+  .md p { margin: 0 0 12px; }
+  .md ul, .md ol { margin: 0 0 12px; padding-left: 20px; }
   .md li { margin-bottom: 4px; }
+  .md li::marker { color: var(--gray-400); }
   .md code {
-    background: var(--sunken); border: 1px solid var(--border); border-radius: 5px;
-    padding: 1px 5px; font-size: 12.5px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--gray-100); border: 1px solid var(--gray-200); border-radius: var(--r-sm);
+    padding: 1px 4px; font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   .md pre {
-    background: var(--sunken); border: 1px solid var(--border); border-radius: 9px;
+    background: var(--bg-200); border: 1px solid var(--gray-200); border-radius: var(--r-lg);
     padding: 12px 14px; overflow-x: auto; margin: 0 0 12px;
   }
   .md pre code { background: none; border: none; padding: 0; }
-  .md a { color: var(--accent); text-underline-offset: 3px; }
-  .md blockquote {
-    margin: 0 0 10px; padding-left: 12px; border-left: 3px solid var(--border-2); color: var(--muted);
-  }
+  .md a { color: var(--gray-1000); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--gray-400); }
+  .md a:hover { text-decoration-color: var(--gray-1000); }
+  .md blockquote { margin: 0 0 12px; padding-left: 12px; border-left: 2px solid var(--gray-300); color: var(--gray-900); }
   .md table { border-collapse: collapse; width: 100%; margin: 0 0 12px; font-size: 13px; display: block; overflow-x: auto; }
-  .md th, .md td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
-  .md th { background: var(--sunken); font-weight: 600; }
-  .md hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+  .md th, .md td { border: 1px solid var(--gray-200); padding: 6px 10px; text-align: left; }
+  .md th { background: var(--bg-200); font-weight: 500; }
+  .md hr { border: none; border-top: 1px solid var(--gray-200); margin: 20px 0; }
 
-  .empty { color: var(--muted); text-align: center; padding: 56px 20px; }
+  .empty { color: var(--gray-900); text-align: center; padding: 56px 20px; }
 
-  /* ------------------------------------------------------------ composer -- */
-  footer { flex: none; border-top: 1px solid var(--border); padding: 12px 18px 16px; background: var(--surface); }
+  .card {
+    border: 1px solid var(--gray-200); border-radius: var(--r-lg);
+    padding: 14px 16px; margin-bottom: 8px; background: var(--bg-100);
+  }
+  .card b { display: block; font-weight: 500; margin-bottom: 4px; }
+  .card .meta { font-size: 12px; color: var(--gray-900); }
+  .card .ans { margin-top: 8px; font-size: 13px; color: var(--gray-900); }
+
+  /* ----------------------------------------------------------- composer -- */
+  footer { flex: none; border-top: 1px solid var(--gray-200); padding: 12px 20px 16px; background: var(--bg-100); }
   .composer { max-width: 720px; margin: 0 auto; }
   .inputWrap {
-    display: flex; align-items: flex-end; gap: 8px; background: var(--surface);
-    border: 1px solid var(--border-2); border-radius: 14px; padding: 6px 6px 6px 14px;
+    display: flex; align-items: flex-end; gap: 6px; background: var(--bg-100);
+    border: 1px solid var(--gray-300); border-radius: var(--r-xl); padding: 6px 6px 6px 14px;
     transition: border-color var(--motion);
   }
-  .inputWrap:focus-within { border-color: var(--accent); }
+  .inputWrap:focus-within { border-color: var(--gray-400); }
   textarea {
-    flex: 1; border: none; background: none; resize: none; padding: 9px 0;
+    flex: 1; border: none; background: none; resize: none; padding: 8px 0;
     min-height: 24px; max-height: 180px; outline: none;
   }
-  .langSel {
-    border: none; background: none; color: var(--muted); cursor: pointer;
-    padding: 6px 2px; min-height: 34px;
+  .lang {
+    appearance: none; border: none; background: none; color: var(--gray-900);
+    cursor: pointer; height: 32px; padding: 0 4px; font-size: 13px;
   }
   .send {
     background: var(--accent); color: var(--accent-fg); border: none; cursor: pointer;
-    border-radius: 999px; width: 34px; height: 34px; flex: none; font-size: 15px;
+    border-radius: var(--r-lg); width: 32px; height: 32px; display: grid; place-items: center;
     transition: filter var(--motion);
   }
-  .send:hover:not(:disabled) { filter: brightness(1.08); }
-  .send:disabled { opacity: 0.4; cursor: not-allowed; }
-  .hintbar { display: flex; align-items: center; gap: 10px; margin: 8px 2px 0; font-size: 12px; color: var(--faint); }
+  .send:hover:not(:disabled) { filter: brightness(1.05); }
+  .send:disabled { opacity: .4; cursor: not-allowed; }
+  .hint { margin: 8px 4px 0; font-size: 12px; color: var(--gray-400); }
 
   /* ------------------------------------------------------------- dialog -- */
   dialog {
-    background: var(--surface); color: var(--fg); border: 1px solid var(--border);
-    border-radius: var(--r); padding: 22px; max-width: 460px; width: 92%;
-    box-shadow: 0 16px 48px rgb(0 0 0 / 14%);
+    background: var(--bg-100); color: var(--gray-1000); border: 1px solid var(--gray-200);
+    border-radius: var(--r-xl); padding: 24px; max-width: 460px; width: 92%;
+    box-shadow: 0 12px 40px rgb(0 0 0 / 10%);
   }
-  dialog::backdrop { background: rgb(0 0 0 / 26%); }
-  dialog h2 { margin: 0 0 4px; font-size: 16px; }
-  dialog .sub { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
-  label { display: block; margin-bottom: 13px; }
-  label span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
-  label input, label textarea.mem {
-    width: 100%; background: var(--bg); border: 1px solid var(--border-2);
-    border-radius: 9px; padding: 9px 11px; min-height: 38px;
+  dialog::backdrop { background: rgb(0 0 0 / 24%); }
+  dialog h2 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+  dialog .sub { color: var(--gray-900); font-size: 13px; margin: 0 0 20px; }
+  label { display: block; margin-bottom: 16px; }
+  label span { display: block; font-size: 12px; color: var(--gray-900); margin-bottom: 6px; }
+  label input, textarea.mem {
+    width: 100%; background: var(--bg-100); border: 1px solid var(--gray-300);
+    border-radius: var(--r-lg); padding: 8px 12px; min-height: 36px; outline: none;
+    transition: border-color var(--motion);
   }
-  .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
-  .btn {
-    border-radius: 999px; padding: 9px 17px; min-height: 38px; cursor: pointer;
-    border: 1px solid var(--border-2); background: var(--surface); transition: all var(--motion);
-  }
-  .btn:hover { background: var(--sunken); }
-  .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
-  .btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  label input:focus, textarea.mem:focus { border-color: var(--gray-400); }
+  .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 </style>
 
-<header>
-  <img src="icon/128.png" alt="">
-  <span class="brand">CrewSurf</span>
+<!-- One icon set, one stroke weight, defined once. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="i-settings"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></g>
+    <g id="i-panel"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></g>
+    <g id="i-mic"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></g>
+    <g id="i-send"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></g>
+    <g id="i-stop"><rect x="6" y="6" width="12" height="12" rx="2"/></g>
+    <g id="i-window"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></g>
+  </defs>
+</svg>
 
-  <select id="model" class="pill" aria-label="Model">
+<header>
+  <img class="mark" src="icon/128.png" alt="">
+  <span class="wordmark">CrewSurf</span>
+
+  <select id="model" class="select" aria-label="Model">
     <option value="cloud">Qwen · Cloud</option>
     <option value="local">Qwen · Local</option>
   </select>
 
-  <select id="translate" class="pill" aria-label="Translate page to">
+  <select id="translate" class="select" aria-label="Translate the current page">
     <option value="">Translate…</option>
     <option value="Hindi">Hindi</option>
     <option value="Bodo">Bodo</option>
     <option value="Assamese">Assamese</option>
     <option value="Bengali">Bengali</option>
+    <option value="Tamil">Tamil</option>
     <option value="Spanish">Spanish</option>
     <option value="French">French</option>
+    <option value="German">German</option>
     <option value="Japanese">Japanese</option>
+    <option value="English">English</option>
   </select>
 
   <span class="grow"></span>
-  <span id="status" style="font-size:12px;color:var(--muted)"></span>
-  <button class="iconbtn" id="previewBtn" aria-pressed="true" aria-label="Toggle live view" title="Live view">▦</button>
-  <button class="iconbtn" id="settingsBtn" aria-label="Settings" title="Settings">⚙</button>
+  <span class="status" id="status"></span>
+  <button class="icobtn" id="previewBtn" aria-pressed="true" aria-label="Toggle live view" title="Live view">
+    <svg class="ico" viewBox="0 0 24 24"><use href="#i-panel"/></svg>
+  </button>
+  <button class="icobtn" id="settingsBtn" aria-label="Settings" title="Settings">
+    <svg class="ico" viewBox="0 0 24 24"><use href="#i-settings"/></svg>
+  </button>
 </header>
 
 <div class="tabs" role="tablist">
@@ -241,11 +357,12 @@
           <div class="hero" id="hero">
             <img src="icon/128.png" alt="">
             <h1>What should I do?</h1>
-            <p>Give me a task. I'll work it through in a side window and you can watch every step from here.</p>
+            <p>Give me a task. I work in a tab beside this one — grouped under <b>CrewSurf</b> — so you can watch, jump in, or carry on with something else.</p>
             <div class="chips">
-              <button class="chip" data-task="Summarise the page I have open">Summarise this page</button>
-              <button class="chip" data-task="Search the web for today's top technology news and summarise it">Search the web</button>
-              <button class="chip" data-task="Find and fill the form on the current page">Fill this form</button>
+              <button class="chip" data-task="Search Wikipedia for the Bodo people and summarise who they are, their language and where they live">Research a topic</button>
+              <button class="chip" data-task="Find today's top technology headlines and list the five most important with one line each">Gather headlines</button>
+              <button class="chip" data-task="Find the form on this page and fill it in with my details">Fill a form</button>
+              <button class="chip" data-task="Summarise the page I have open in five bullet points">Summarise this page</button>
             </div>
           </div>
         </div>
@@ -256,30 +373,43 @@
       </div>
 
       <div id="p-memory" role="tabpanel" aria-labelledby="tab-memory" hidden>
-        <p style="color:var(--muted);margin-top:0">
+        <p style="color:var(--gray-900);margin-top:0">
           Anything here is given to the model on every task — your name, how you like answers,
-          sites you use. Kept on this Mac only.
+          sites you use. Stored on this Mac only.
         </p>
         <label>
           <span>Memory</span>
-          <textarea class="mem" id="memory" rows="10" placeholder="e.g. I'm Vee. Prefer short answers. My email is on Gmail."></textarea>
+          <textarea class="mem" id="memory" rows="10" placeholder="e.g. I'm Vee. Prefer short answers. My mail is on Gmail."></textarea>
         </label>
-        <div class="row" style="justify-content:flex-start">
+        <div class="row" style="justify-content:flex-start;align-items:center">
           <button class="btn primary" id="saveMemory">Save memory</button>
-          <span id="memSaved" style="align-self:center;font-size:12px;color:var(--ok)"></span>
+          <span id="memSaved" style="font-size:12px;color:var(--ok)"></span>
         </div>
       </div>
     </div>
   </div>
 
   <aside id="preview" class="on" aria-label="Live view">
+    <div class="pinned">
     <div class="live"><span class="dot" id="liveDot"></span><span id="liveLabel">Idle</span></div>
-    <div class="shot" id="shot">No page yet</div>
-    <div class="where"><b id="whereTitle">—</b><span id="whereUrl"></span></div>
+    <div class="shot" id="shot">Preview appears while working</div>
+    <div class="nowcard">
+      <img class="fav lg" id="nowFav" alt="">
+      <div class="nowtext">
+        <b id="whereTitle">Nothing open yet</b>
+        <span id="whereUrl"></span>
+      </div>
+    </div>
+    <div class="section">Open tabs</div>
+    <div id="tabList" class="tablist"></div>
+
+    <div class="section">Steps</div>
+    </div>
     <div class="steps" id="steps"></div>
-    <div class="asideRow">
-      <button class="pill" id="openTab">Open window</button>
-      <button class="pill" id="stopBtn">Stop</button>
+
+    <div class="asideRow pinned">
+      <button class="btn" id="openTab"><svg class="ico" viewBox="0 0 24 24"><use href="#i-window"/></svg>Go to tab</button>
+      <button class="btn" id="stopBtn"><svg class="ico" viewBox="0 0 24 24"><use href="#i-stop"/></svg>Stop</button>
     </div>
   </aside>
 </div>
@@ -288,21 +418,25 @@
   <div class="composer">
     <div class="inputWrap">
       <textarea id="input" rows="1" placeholder="Ask anything, or give a task…" aria-label="Task"></textarea>
-      <select id="lang" class="langSel" aria-label="Speech language">
+      <select id="lang" class="lang" aria-label="Speech language">
         <option value="en-US">EN</option>
         <option value="hi-IN">HI</option>
         <option value="as-IN">AS</option>
         <option value="bn-IN">BN</option>
+        <option value="ta-IN">TA</option>
         <option value="es-ES">ES</option>
         <option value="fr-FR">FR</option>
+        <option value="de-DE">DE</option>
         <option value="ja-JP">JA</option>
       </select>
-      <button class="iconbtn" id="micBtn" aria-pressed="false" aria-label="Dictate" title="Dictate">🎤</button>
-      <button class="send" id="send" aria-label="Run">↑</button>
+      <button class="icobtn" id="micBtn" aria-pressed="false" aria-label="Dictate" title="Dictate">
+        <svg class="ico" viewBox="0 0 24 24"><use href="#i-mic"/></svg>
+      </button>
+      <button class="send" id="send" aria-label="Run">
+        <svg class="ico" viewBox="0 0 24 24"><use href="#i-send"/></svg>
+      </button>
     </div>
-    <div class="hintbar">
-      <span id="hint">Enter to run · Shift+Enter for a new line</span>
-    </div>
+    <p class="hint" id="hint">Enter to run · Shift+Enter for a new line</p>
   </div>
 </footer>
 
@@ -332,4 +466,5 @@
 </dialog>
 
 <script src="markdown.js"></script>
+<script src="redact.js"></script>
 <script src="crewsurf-cockpit.js"></script>

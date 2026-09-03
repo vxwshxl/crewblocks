@@ -98,6 +98,16 @@ if "action" in m and isinstance(m["action"], dict):
 # change below is silently reverted on the next update check.
 m.pop("update_url", None)
 
+# The live preview screenshots a tab the user is *not* looking at.
+# captureVisibleTab cannot do that — by definition it returns the visible tab,
+# which is the cockpit. Page.captureScreenshot over the debugger protocol can,
+# and it is the only API that can. The price is a "CrewSurf is debugging this
+# browser" bar while it is attached; the cockpit attaches only during a run and
+# detaches at the end, and the preview toggle in the header disables it outright.
+perms = m.setdefault("permissions", [])
+if "debugger" not in perms:
+    perms.append("debugger")
+
 # "key" pins the extension id. Losing it would mint a new id, and the browser
 # would treat this as a different extension and drop its stored settings.
 assert "key" in m, "manifest has no key; the id would change"
@@ -136,6 +146,7 @@ echo "Installing the CrewSurf cockpit…"
 cp "$SKIN/newtab.html" "$TARGET/newtab.html"
 cp "$SKIN/crewsurf-cockpit.js" "$TARGET/crewsurf-cockpit.js"
 cp "$SKIN/markdown.js" "$TARGET/markdown.js"
+cp "$SKIN/redact.js" "$TARGET/redact.js"
 
 # ------------------------------------------------------------------ harness --
 # The MCP screen lists the coding agents it can pair with. CrewSurf drives itself

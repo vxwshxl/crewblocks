@@ -98,6 +98,21 @@ plutil -replace CFBundleDisplayName -string "$BRAND" "$WORK/Contents/Info.plist"
 # actool and risks the bundle's other assets, for no extra benefit.
 plutil -remove CFBundleIconName "$WORK/Contents/Info.plist" 2>/dev/null || true
 
+# ------------------------------------------------------------ auto-update --
+# The app ships Sparkle, and Sparkle replaces the whole bundle when it updates —
+# which silently reverts every change this script makes. That is not theoretical:
+# an update to 0.49.5 put the vendor's name and icon back while CrewSurf was
+# running, leaving only the profile-side cockpit branded.
+#
+# Turning it off is therefore load-bearing, not a preference. The cost is real
+# and worth stating: this build no longer receives upstream security fixes, so
+# re-run ./install.sh --force when you want a newer Chromium.
+echo "Disabling Sparkle auto-update…"
+plutil -replace SUEnableAutomaticChecks -bool false "$WORK/Contents/Info.plist" 2>/dev/null || \
+  plutil -insert SUEnableAutomaticChecks -bool false "$WORK/Contents/Info.plist" 2>/dev/null || true
+plutil -replace SUAutomaticallyUpdate -bool false "$WORK/Contents/Info.plist" 2>/dev/null || \
+  plutil -insert SUAutomaticallyUpdate -bool false "$WORK/Contents/Info.plist" 2>/dev/null || true
+
 # Helper bundles get display names too — these are what appear in permission
 # prompts and in Activity Monitor's readable column.
 find "$WORK/Contents/Frameworks" -name "Info.plist" -path "*Helper*" -print0 |
@@ -194,5 +209,11 @@ fi
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
   -f "$APP" >/dev/null 2>&1 || true
 touch "$APP"
+
+# Sparkle consults user defaults ahead of the bundle plist, so the plist edit
+# above is not enough on its own.
+defaults write com.browseros.BrowserClaw SUEnableAutomaticChecks -bool false 2>/dev/null || true
+defaults write com.browseros.BrowserClaw SUAutomaticallyUpdate  -bool false 2>/dev/null || true
+defaults write com.browseros.BrowserClaw SUScheduledCheckInterval -int 604800000 2>/dev/null || true
 
 plutil -p "$APP/Contents/Info.plist" | grep -E "CFBundleName|CFBundleDisplayName"

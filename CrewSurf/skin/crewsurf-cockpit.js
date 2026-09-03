@@ -14,18 +14,26 @@
  * hallucinated selector cannot reach the page — the worst case is an index that
  * does not exist, which we report back as a failed step and let it retry.
  *
- * ## Why the work happens in a separate window
+ * ## Where the work happens
  *
- * Driving the tab you are sitting in means the browser yanks you somewhere new
- * every time the agent moves, which makes it impossible to do anything else. So
- * the agent gets its own unfocused window and the cockpit stays put, streaming
- * a thumbnail of that window back into the side panel. You watch, or you ignore
- * it and carry on — which is the entire point of an agent doing the work.
+ * In sibling tabs, in this same window, collected under a "CrewSurf" tab group.
+ * Driving the tab you are sitting in would yank you somewhere new on every step;
+ * a separate window fixed that but hid the work somewhere you were not looking,
+ * and made "translate this page" point at a page you had never seen. Sibling
+ * tabs keep the work visible, reachable in one click, and out of your way.
+ *
+ * Each source gets its own tab: `open` for a new one, `switch` to read between
+ * them, `navigate` only to move within a site. Reusing one tab meant every new
+ * page destroyed the last, so a price comparison thrashed back and forth
+ * re-fetching what it had already seen.
+ *
+ * The side panel streams a thumbnail of the tab being worked in. That needs the
+ * debugger protocol, because captureVisibleTab can only ever return the tab in
+ * front — see `captureShot`.
  */
 
 const MAX_STEPS = 25;          // hard stop; a loop that cannot finish must end
 const MAX_ELEMENTS = 120;      // keep the prompt affordable on the local model
-const SHOT_MS = 1400;          // live preview cadence
 const SETTINGS_KEY = 'crewsurf.settings';
 const MEMORY_KEY = 'crewsurf.memory';
 const ACTIVITY_KEY = 'crewsurf.activity';
@@ -142,6 +150,58 @@ function extractPageContext(limit) {
     };
 }
 
+/**
+ * Runs inside the target tab. Collects every visible text node, tagged with an
+ * index, so translations can be written back to the exact nodes they came from.
+ *
+ * Working at the text-node level rather than on innerHTML is what keeps the page
+ * intact: no markup is re-parsed, so links, buttons and event handlers all
+ * survive translation. Script, style and editable fields are skipped — rewriting
+ * those either breaks the page or overwrites what the user typed.
+ */
+function collectTextNodes(maxNodes) {
+    const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'CODE', 'PRE']);
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+            const text = node.nodeValue.trim();
+            if (text.length < 2) return NodeFilter.FILTER_REJECT;
+            const parent = node.parentElement;
+            if (!parent || SKIP.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+            if (parent.isContentEditable) return NodeFilter.FILTER_REJECT;
+            const style = getComputedStyle(parent);
+            if (style.display === 'none' || style.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+            if (!/\p{L}/u.test(text)) return NodeFilter.FILTER_REJECT; // numbers/symbols only
+            return NodeFilter.FILTER_ACCEPT;
+        },
+    });
+
+    window.__crewsurfNodes = [];
+    const out = [];
+    let node;
+    while ((node = walker.nextNode()) && out.length < maxNodes) {
+        window.__crewsurfNodes.push(node);
+        out.push({ i: out.length, t: node.nodeValue.trim().slice(0, 400) });
+    }
+    return out;
+}
+
+/** Runs inside the target tab. Writes translations back onto the same nodes. */
+function writeTranslations(pairs) {
+    const nodes = window.__crewsurfNodes || [];
+    let written = 0;
+    for (const { i, t } of pairs) {
+        const node = nodes[i];
+        if (!node || !t) continue;
+        // Preserve the original whitespace so layout does not shift.
+        const original = node.nodeValue;
+        const lead = original.match(/^\s*/)[0];
+        const tail = original.match(/\s*$/)[0];
+        node.nodeValue = lead + t + tail;
+        written++;
+    }
+    return { written };
+}
+
 /** Runs inside the target tab. Acts on an element previously indexed. */
 function performAction(action) {
     const find = (i) => document.querySelector(`[data-crewsurf-idx="${i}"]`);
@@ -192,29 +252,42 @@ and nothing else. No prose, no markdown fence.
 Actions:
   {"type":"click","index":N,"why":"..."}
   {"type":"type","index":N,"text":"...","submit":true,"why":"..."}
-  {"type":"navigate","url":"https://...","why":"..."}
+  {"type":"navigate","url":"https://...","why":"..."}      // reuse the current tab
+  {"type":"open","url":"https://...","why":"..."}          // NEW tab, keeps the old one
+  {"type":"switch","tab":N,"why":"..."}                    // read one of your open tabs
   {"type":"scroll","amount":600,"why":"..."}
+  {"type":"ask","question":"...","sensitive":true}
   {"type":"done","answer":"the final answer for the user"}
 
 Rules:
 - "index" must be one of the indices listed in ELEMENTS. Never invent one.
 - Prefer navigate over hunting for a search box when you know the URL.
+- Comparing sources? "open" each one in its own tab, then "switch" between them
+  to read each. Never "navigate" away from a page you still need — that throws
+  the page away and you will have to fetch it again.
+- TABS lists the tabs you already have. Read one before opening another copy.
 - When the task is a question you can already answer from the page, use "done".
 - When no page is loaded, either answer with "done" or "navigate" somewhere useful.
 - Greetings and small talk are answered with "done", not by browsing.
+- Never guess a password, OTP, card number or personal detail. Use "ask".
+- An element marked [sensitive] must not be typed into without asking first.
 - Keep "why" under 12 words.
 - The "answer" field is shown to the user as Markdown. Use headings, lists and
   tables where they help, and keep it tight.`;
 
-function buildUserMessage(task, ctx, history, memory) {
+function buildUserMessage(task, ctx, history, memory, openTabs = []) {
     const past = history.length
         ? `\nSTEPS SO FAR:\n${history.map((h, i) => `${i + 1}. ${h}`).join('\n')}`
         : '';
     const notes = memory ? `\nWHAT YOU KNOW ABOUT THE USER:\n${memory}\n` : '';
 
+    const tabs = openTabs.length
+        ? `\nYOUR OPEN TABS:\n${openTabs.map((t, i) => `[${i}]${t.id === workTabId ? ' (reading)' : ''} ${t.title} — ${t.url}`).join('\n')}\n`
+        : '';
+
     if (!ctx) {
         return `TASK: ${task}
-${notes}
+${notes}${tabs}
 No page is loaded, so there is nothing to read or click yet.
 If the task is conversational, answer it with "done".
 If it needs the web, "navigate" to a page you can work from.${past}
@@ -227,7 +300,7 @@ Reply with one JSON action.`;
         .join('\n');
 
     return `TASK: ${task}
-${notes}
+${notes}${tabs}
 URL: ${ctx.url}
 TITLE: ${ctx.title}
 
@@ -241,7 +314,7 @@ Reply with one JSON action.`;
 }
 
 /** Both tiers speak the OpenAI chat API, so only the base URL and key differ. */
-async function askModel(settings, tier, messages, signal) {
+async function askModel(settings, tier, messages, signal, maxTokens = 900) {
     const cloud = tier === 'cloud';
     if (cloud && !settings.apiKey) {
         throw new Error('No OpenRouter key yet — open Settings and paste one.');
@@ -250,6 +323,18 @@ async function askModel(settings, tier, messages, signal) {
     const base = cloud ? 'https://openrouter.ai/api/v1' : settings.localUrl.replace(/\/$/, '');
     const headers = { 'Content-Type': 'application/json' };
     if (cloud) headers.Authorization = `Bearer ${settings.apiKey}`;
+
+    // THE GATE. Nothing reaches the network on the cloud tier without passing
+    // through local redaction first, and a failed assertion throws before the
+    // fetch rather than after it. On the local tier the model is on this
+    // machine, so there is nothing to redact from.
+    if (cloud) {
+        messages = messages.map((m) => {
+            const { text, findings, total } = window.CrewSurfRedact.sanitizeText(m.content);
+            if (total) lastRedaction = window.CrewSurfRedact.describe(findings);
+            return { ...m, content: text };
+        });
+    }
 
     let res;
     try {
@@ -261,7 +346,7 @@ async function askModel(settings, tier, messages, signal) {
                 model: cloud ? settings.cloudModel : settings.localModel,
                 messages,
                 temperature: 0,
-                max_tokens: 900,
+                max_tokens: maxTokens,
             }),
         });
     } catch (err) {
@@ -314,18 +399,44 @@ function parseAction(reply) {
 const thread = $('thread');
 let busy = false;
 let abort = null;
-let shotTimer = null;
 let workWindowId = null;
 let workTabId = null;
+let workGroupId = null;
+let lastRedaction = null;   // reported into the step log so the pass is visible
+let previewOn = true;       // live thumbnail on/off, header toggle
+let agentTabIds = [];       // every tab this run has opened, in order
+
+/** The agent's own tabs, dead ones dropped, for the prompt and the sidebar. */
+async function listAgentTabs() {
+    const live = [];
+    for (const id of agentTabIds) {
+        const tab = await chrome.tabs.get(id).catch(() => null);
+        if (tab) live.push({ id: tab.id, title: tab.title || '', url: tab.url || '' });
+    }
+    agentTabIds = live.map((t) => t.id);
+    return live;
+}
+
+/** Opens a new tab beside the others and makes it the one being read. */
+async function openAgentTab(url) {
+    const me = await chrome.tabs.getCurrent();
+    const created = await chrome.tabs.create({
+        windowId: me.windowId,
+        url,
+        active: false,             // never steal the foreground
+        index: me.index + 1 + agentTabIds.length,
+    });
+    agentTabIds.push(created.id);
+    workTabId = created.id;
+    await groupWorkTab(created.id, me.windowId);
+    await waitForComplete(created.id);
+    return created;
+}
 
 function addMessage(role, text, asMarkdown = false) {
     $('hero')?.remove();
-    const el = document.createElement('div');
-    el.className = `msg ${role}`;
-
-    const avatar = document.createElement('div');
-    avatar.className = 'avatar';
-    avatar.textContent = role === 'user' ? 'You' : 'C';
+    const row = document.createElement('div');
+    row.className = `row ${role}`;
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
@@ -337,10 +448,73 @@ function addMessage(role, text, asMarkdown = false) {
         bubble.textContent = text;
     }
 
-    el.append(avatar, bubble);
-    thread.appendChild(el);
-    bubble.scrollIntoView({ block: 'end' });
+    row.appendChild(bubble);
+    thread.appendChild(row);
+    row.scrollIntoView({ block: 'end' });
     return bubble;
+}
+
+/**
+ * Suspends the run and asks the human, the way a permission prompt does.
+ *
+ * Resolves with the typed value, or null if they decline. The value is returned
+ * to the caller and nowhere else: it is not appended to the transcript, not put
+ * in `history`, and never included in a prompt.
+ */
+function askUser(question, note, secret) {
+    return new Promise((resolve) => {
+        $('hero')?.remove();
+        const box = document.createElement('div');
+        box.className = 'prompt';
+
+        const q = document.createElement('p');
+        q.className = 'q';
+        q.textContent = question;
+
+        const sub = document.createElement('p');
+        sub.className = 'sub';
+        sub.textContent = note || '';
+
+        const field = document.createElement('div');
+        field.className = 'field';
+
+        const input = document.createElement('input');
+        input.type = secret ? 'password' : 'text';
+        input.autocomplete = secret ? 'off' : 'on';
+        input.setAttribute('aria-label', question);
+
+        const send = document.createElement('button');
+        send.className = 'btn primary';
+        send.textContent = 'Use this';
+
+        const skip = document.createElement('button');
+        skip.className = 'btn';
+        skip.textContent = 'Skip';
+
+        let settled = false;
+        const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            box.classList.add('done');
+            sub.textContent = value === null
+                ? 'Skipped.'
+                : secret ? 'Entered directly into the page. Not sent to the model.' : `Used: ${value}`;
+            resolve(value);
+        };
+
+        send.addEventListener('click', () => finish(input.value));
+        skip.addEventListener('click', () => finish(null));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); finish(input.value); }
+            if (e.key === 'Escape') finish(null);
+        });
+
+        field.append(input, send, skip);
+        box.append(q, sub, field);
+        thread.appendChild(box);
+        box.scrollIntoView({ block: 'end' });
+        input.focus();
+    });
 }
 
 function addStep(kind, detail, tone = '') {
@@ -352,94 +526,194 @@ function addStep(kind, detail, tone = '') {
     const d = document.createElement('span');
     d.textContent = detail || '';
     el.append(k, d);
-    $('steps').appendChild(el);
-    el.scrollIntoView({ block: 'nearest' });
+    const log = $('steps');
+    // Follow the tail only if the user is already at the bottom, so scrolling
+    // back to read an earlier step is not yanked away by the next one.
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+    log.appendChild(el);
+    if (atBottom) log.scrollTop = log.scrollHeight;
 }
 
 const setStatus = (t) => { $('status').textContent = t; };
+
+/* ------------------------------------------------------------ live preview -- */
+
+/**
+ * A thumbnail of the tab the agent is working in.
+ *
+ * `chrome.tabs.captureVisibleTab` is the obvious API and it cannot do this: it
+ * returns whichever tab is *visible*, which — now that the work tab is a sibling
+ * of the cockpit rather than in its own window — is always the cockpit itself.
+ * `Page.captureScreenshot` over the debugger protocol reads a background tab
+ * directly, and is the only thing that can.
+ *
+ * Attaching shows Chrome's "CrewSurf is debugging this browser" bar, so the
+ * attachment is scoped as tightly as possible: only during a run, only to the
+ * tab being read, detached the moment the run ends, and skipped entirely when
+ * the preview is toggled off.
+ */
+let dbgTabId = null;
+let shotTimer = null;
+
+async function attachDebugger(tabId) {
+    if (dbgTabId === tabId) return true;
+    await detachDebugger();
+    try {
+        await chrome.debugger.attach({ tabId }, '1.3');
+        dbgTabId = tabId;
+        return true;
+    } catch {
+        return false; // devtools already open on that tab, or permission refused
+    }
+}
+
+async function detachDebugger() {
+    if (dbgTabId === null) return;
+    const id = dbgTabId;
+    dbgTabId = null;
+    try { await chrome.debugger.detach({ tabId: id }); } catch { /* already gone */ }
+}
+
+async function captureShot() {
+    if (!previewOn || workTabId === null) return;
+    const tab = await chrome.tabs.get(workTabId).catch(() => null);
+    if (!tab || !isScriptable(tab.url)) return;
+
+    if (!(await attachDebugger(workTabId))) return;
+    try {
+        const res = await chrome.debugger.sendCommand(
+            { tabId: workTabId },
+            'Page.captureScreenshot',
+            { format: 'jpeg', quality: 45 }
+        );
+        if (!res?.data) return;
+        const shot = $('shot');
+        shot.classList.add('has');
+        let img = shot.querySelector('img');
+        if (!img) {
+            shot.textContent = '';
+            img = document.createElement('img');
+            img.alt = 'Live view of the tab CrewSurf is working in';
+            shot.appendChild(img);
+        }
+        img.src = `data:image/jpeg;base64,${res.data}`;
+    } catch {
+        /* a navigation mid-capture just costs one frame */
+    }
+}
+
+function startPreview() {
+    stopPreview();
+    if (!previewOn) return;
+    captureShot();
+    shotTimer = setInterval(captureShot, 1500);
+}
+
+function stopPreview() {
+    if (shotTimer) clearInterval(shotTimer);
+    shotTimer = null;
+    detachDebugger();
+}
 
 function setLive(running, label) {
     $('liveDot').classList.toggle('run', running);
     $('liveLabel').textContent = label;
 }
 
-function setWhere(title, url) {
-    $('whereTitle').textContent = title || '—';
+function setWhere(title, url, favIconUrl) {
+    $('whereTitle').textContent = title || 'Nothing open yet';
     $('whereUrl').textContent = url || '';
+    const fav = $('nowFav');
+    if (favIconUrl) { fav.src = favIconUrl; fav.style.visibility = 'visible'; }
+    else fav.style.visibility = 'hidden';
 }
 
 /* ------------------------------------------------------------ live view -- */
 
 /**
- * Streams a thumbnail of the work window. captureVisibleTab only ever captures
- * the *active tab of the window you name*, which is why the agent gets a window
- * of its own — it stays capturable while you work somewhere else. It can still
- * fail (minimised window, a chrome:// page), and a failed frame is not worth
- * reporting, so the last good one simply stays put.
+ * The tab the agent works in — a sibling of the cockpit in the *same* window,
+ * grouped under a green "CrewSurf" group so it is obvious in the tab strip and
+ * one click away. A separate window was the earlier design and it was wrong: it
+ * split the work off from the browser the user is actually looking at, so
+ * "translate this page" pointed at a blank page they had never seen.
  */
-async function tickShot() {
-    if (workWindowId === null) return;
+async function groupWorkTab(tabId, windowId) {
     try {
-        const dataUrl = await chrome.tabs.captureVisibleTab(workWindowId, {
-            format: 'jpeg',
-            quality: 55,
-        });
-        const shot = $('shot');
-        let img = shot.querySelector('img');
-        if (!img) {
-            shot.textContent = '';
-            img = document.createElement('img');
-            img.alt = 'Live view of the work window';
-            shot.appendChild(img);
+        if (workGroupId !== null) {
+            const existing = await chrome.tabGroups.get(workGroupId).catch(() => null);
+            if (existing) {
+                await chrome.tabs.group({ tabIds: [tabId], groupId: workGroupId });
+                return;
+            }
+            workGroupId = null;
         }
-        img.src = dataUrl;
+        workGroupId = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
+        await chrome.tabGroups.update(workGroupId, { title: 'CrewSurf', color: 'green' });
     } catch {
-        /* keep the previous frame */
+        workGroupId = null; // grouping is a nicety, never a blocker
     }
 }
 
-function startShots() {
-    stopShots();
-    tickShot();
-    shotTimer = setInterval(tickShot, SHOT_MS);
-}
-function stopShots() {
-    if (shotTimer) clearInterval(shotTimer);
-    shotTimer = null;
-}
+async function ensureWorkTab() {
+    const me = await chrome.tabs.getCurrent();
+    if (!me) return null;
+    workWindowId = me.windowId;
 
-/**
- * The window the agent works in. Created unfocused and off to the side, so the
- * cockpit keeps the foreground and you can keep using the browser.
- */
-async function ensureWorkWindow() {
-    if (workWindowId !== null) {
-        const win = await chrome.windows.get(workWindowId, { populate: true }).catch(() => null);
-        if (win) {
-            const tab = win.tabs?.find((t) => t.id === workTabId) || win.tabs?.[0];
-            if (tab) {
-                workTabId = tab.id;
-                return tab;
-            }
-        }
-        workWindowId = null;
+    if (workTabId !== null) {
+        const live = await chrome.tabs.get(workTabId).catch(() => null);
+        if (live) return live;
         workTabId = null;
     }
 
-    // Reuse a real page the user already has open in this window, if there is
-    // one — moving it is friendlier than opening yet another blank tab.
-    const created = await chrome.windows.create({
+    // Prefer a real page the user already has open — acting on what they are
+    // looking at is almost always what they meant.
+    const tabs = await chrome.tabs.query({ windowId: me.windowId });
+    const existing = tabs.find((t) => t.id !== me.id && isScriptable(t.url));
+    if (existing) {
+        workTabId = existing.id;
+        if (!agentTabIds.includes(existing.id)) agentTabIds.push(existing.id);
+        await groupWorkTab(existing.id, me.windowId);
+        return existing;
+    }
+
+    const created = await chrome.tabs.create({
+        windowId: me.windowId,
         url: 'about:blank',
-        focused: false,
-        width: 1100,
-        height: 800,
-        top: 60,
-        left: 80,
+        active: false,          // the cockpit keeps the foreground
+        index: me.index + 1,
     });
-    workWindowId = created.id;
-    workTabId = created.tabs?.[0]?.id ?? null;
-    if (workTabId === null) return null;
-    return (await waitForComplete(workTabId)) ?? created.tabs[0];
+    workTabId = created.id;
+    if (!agentTabIds.includes(created.id)) agentTabIds.push(created.id);
+    await groupWorkTab(created.id, me.windowId);
+    return (await waitForComplete(created.id)) ?? created;
+}
+
+/** The agent's tabs, listed so you can jump straight to any of them. */
+async function refreshTabList() {
+    const list = $('tabList');
+    list.textContent = '';
+    const me = await chrome.tabs.getCurrent();
+    if (!me) return;
+
+    const tabs = await chrome.tabs.query({ windowId: me.windowId }).catch(() => []);
+    for (const tab of tabs) {
+        if (tab.id === me.id) continue;         // the cockpit is not "work"
+        const row = document.createElement('button');
+        row.className = 'tabrow' + (tab.id === workTabId ? ' active' : '');
+        row.title = tab.url || '';
+
+        const favicon = document.createElement('img');
+        favicon.className = 'fav';
+        favicon.alt = '';
+        if (tab.favIconUrl) favicon.src = tab.favIconUrl;
+
+        const label = document.createElement('span');
+        label.textContent = tab.title || tab.url || 'Untitled';
+
+        row.append(favicon, label);
+        row.addEventListener('click', () => chrome.tabs.update(tab.id, { active: true }));
+        list.appendChild(row);
+    }
 }
 
 /** Resolves once the tab has finished loading, so there is a DOM to read. */
@@ -470,13 +744,14 @@ async function runTask(task) {
     $('steps').textContent = '';
     setLive(true, 'Working');
 
-    const tab = await ensureWorkWindow();
+    const tab = await ensureWorkTab();
     if (!tab) {
-        addStep('Error', 'Could not open a window to work in.', 'err');
+        addStep('Error', 'Could not open a tab to work in.', 'err');
         setLive(false, 'Idle');
         return;
     }
-    startShots();
+    await refreshTabList();
+    startPreview();
 
     for (let step = 1; step <= MAX_STEPS; step++) {
         if (abort?.signal.aborted) {
@@ -487,10 +762,10 @@ async function runTask(task) {
 
         const live = await chrome.tabs.get(workTabId).catch(() => null);
         if (!live) {
-            addStep('Error', 'The work window was closed.', 'err');
+            addStep('Error', 'The working tab was closed.', 'err');
             return;
         }
-        setWhere(live.title, live.url);
+        setWhere(live.title, live.url, live.favIconUrl);
 
         // Best-effort. A blank or internal page just means there is nothing to
         // describe yet — the model can still answer, or navigate somewhere it
@@ -509,6 +784,23 @@ async function runTask(task) {
             }
         }
 
+        // Redact before the context is ever put in a prompt. On the cloud tier
+        // this is what the problem statement requires; on the local tier it
+        // costs a millisecond and keeps one code path.
+        if (ctx) {
+            try {
+                const sanitised = window.CrewSurfRedact.sanitizeContext(ctx);
+                if (sanitised.total) {
+                    addStep('Redacted', window.CrewSurfRedact.describe(sanitised.findings), 'ok');
+                }
+                ctx = sanitised.ctx;
+            } catch (err) {
+                addStep('Blocked', err.message, 'err');
+                addMessage('agent', `**Redaction gate failed.** ${err.message}`, true);
+                return;
+            }
+        }
+
         let reply;
         try {
             reply = await askModel(
@@ -516,7 +808,7 @@ async function runTask(task) {
                 tier,
                 [
                     { role: 'system', content: SYSTEM_PROMPT },
-                    { role: 'user', content: buildUserMessage(task, ctx, history, memory) },
+                    { role: 'user', content: buildUserMessage(task, ctx, history, memory, await listAgentTabs()) },
                 ],
                 abort?.signal
             );
@@ -527,11 +819,26 @@ async function runTask(task) {
             return;
         }
 
-        const action = parseAction(reply);
+        let action = parseAction(reply);
         if (!action || !action.type) {
             addStep('Unreadable reply', reply.slice(0, 80), 'err');
             addMessage('agent', "I couldn't read the model's reply as an action.", true);
             return;
+        }
+
+        if (action.type === 'ask') {
+            const answer = await askUser(
+                action.question || 'What should I use here?',
+                'Only what you type is used. Nothing is filled in on a guess.',
+                Boolean(action.sensitive)
+            );
+            if (answer === null) {
+                addStep('Stopped', 'you declined to answer');
+                return;
+            }
+            // A sensitive answer is deliberately not echoed into history.
+            history.push(action.sensitive ? 'user supplied a private value' : `user answered: ${answer}`);
+            continue;
         }
 
         if (action.type === 'done') {
@@ -549,12 +856,59 @@ async function runTask(task) {
 
         const why = action.why || '';
 
+        if (action.type === 'open') {
+            addStep('Open', action.url);
+            const tab = await openAgentTab(action.url);
+            history.push(`opened ${action.url} in a new tab`);
+            setWhere(tab.title, action.url, tab.favIconUrl);
+            await refreshTabList();
+            continue;
+        }
+
+        if (action.type === 'switch') {
+            const open = await listAgentTabs();
+            const target = open[action.tab];
+            if (!target) {
+                addStep('Switch failed', `no tab ${action.tab}`, 'err');
+                history.push(`switch to tab ${action.tab} failed`);
+                continue;
+            }
+            workTabId = target.id;
+            addStep('Switch', target.title || target.url);
+            history.push(`switched to ${target.url}`);
+            await refreshTabList();
+            continue;
+        }
+
         if (action.type === 'navigate') {
             addStep('Navigate', action.url);
             await chrome.tabs.update(workTabId, { url: action.url });
             await waitForComplete(workTabId);
+            await refreshTabList();
             history.push(`navigated to ${action.url}`);
             continue;
+        }
+
+        // A field the redactor classed as sensitive is never filled from the
+        // model's guess. The run suspends, the human types the value, and it
+        // goes straight into the page — it is never added to the transcript and
+        // never reaches a prompt.
+        if (action.type === 'type') {
+            const target = ctx?.elements?.[action.index];
+            if (target?.sensitive) {
+                addStep('Paused', 'sensitive field — asking you', 'warn');
+                const supplied = await askUser(
+                    `This field looks sensitive. What should I enter?`,
+                    `${target.tag}${target.type ? ` · ${target.type}` : ''} — your answer goes straight into the page and is never sent to the model.`,
+                    true
+                );
+                if (supplied === null) {
+                    addStep('Skipped', 'you declined');
+                    history.push('user declined to fill a sensitive field');
+                    continue;
+                }
+                action = { ...action, text: supplied };
+            }
         }
 
         const [outcome] = await chrome.scripting
@@ -569,6 +923,7 @@ async function runTask(task) {
             // wait properly rather than guessing at a delay.
             await sleep(400);
             await waitForComplete(workTabId, 10000);
+            captureShot();
         } else {
             addStep(action.type, `failed — ${outcome?.result?.error}`, 'err');
             history.push(`${action.type} failed: ${outcome?.result?.error}`);
@@ -577,6 +932,175 @@ async function runTask(task) {
 
     addStep('Stopped', `hit the ${MAX_STEPS}-step limit`, 'err');
     addMessage('agent', `I stopped after ${MAX_STEPS} steps without finishing.`, true);
+}
+
+/* -------------------------------------------------------------- translate -- */
+
+// Sized against the reply budget, not against how many strings exist. Sixty
+// segments needs well over 2000 tokens to come back, and a truncated array is
+// not salvageable JSON — which is exactly how every batch failed before.
+const TRANSLATE_BATCH = 14;
+const TRANSLATE_TOKENS = 3000;
+
+/**
+ * Translates the page in place, rather than pasting a translation into chat.
+ *
+ * This does not go through the action loop on purpose. Translation is not a
+ * decision the model has to reason its way to — it is one deterministic pass
+ * over the page's text, so routing it through "pick an action" would make it
+ * slower, dearer and less reliable for no gain.
+ *
+ * Text is sent in batches as a JSON array and written back by index, so a batch
+ * that comes back malformed costs that batch and nothing else.
+ */
+async function runTranslate(language) {
+    const settings = await loadSettings();
+    const tier = $('model').value;
+
+    $('steps').textContent = '';
+    setLive(true, `Translating → ${language}`);
+
+    const tab = await ensureWorkTab();
+    if (!tab) {
+        addStep('Error', 'Could not open a tab to work in.', 'err');
+        setLive(false, 'Idle');
+        return;
+    }
+    await refreshTabList();
+    startPreview();
+
+    const live = await chrome.tabs.get(workTabId).catch(() => null);
+    if (!live || !isScriptable(live.url)) {
+        addStep('Nothing to translate', 'open a web page in a tab first', 'err');
+        addMessage(
+            'agent',
+            'There is no web page open to translate. Open a page in another tab, then pick a language again.',
+            true
+        );
+        return;
+    }
+    setWhere(live.title, live.url, live.favIconUrl);
+
+    let nodes;
+    try {
+        const [res] = await chrome.scripting.executeScript({
+            target: { tabId: workTabId },
+            func: collectTextNodes,
+            args: [1200],
+        });
+        nodes = res.result || [];
+    } catch (err) {
+        addStep('Error', `could not read the page — ${err.message}`, 'err');
+        return;
+    }
+
+    if (!nodes.length) {
+        addStep('Nothing to translate', 'no visible text found', 'err');
+        return;
+    }
+    addStep('Found', `${nodes.length} text segments`);
+
+    let done = 0;
+    for (let start = 0; start < nodes.length; start += TRANSLATE_BATCH) {
+        if (abort?.signal.aborted) { addStep('Stopped', 'by you'); break; }
+
+        const batch = nodes.slice(start, start + TRANSLATE_BATCH);
+        setStatus(`Translating ${start + 1}–${Math.min(start + TRANSLATE_BATCH, nodes.length)} of ${nodes.length}`);
+
+
+        let pairs = null;
+        let attempt = 0;
+        // One retry at half size: a batch that overran the reply budget usually
+        // fits when split, so this recovers instead of dropping the segments.
+        for (const slice of [batch, batch.slice(0, Math.ceil(batch.length / 2))]) {
+            attempt++;
+            let reply;
+            try {
+                reply = await askModel(
+                    settings,
+                    tier,
+                    [
+                        { role: 'system', content: 'You are a precise translation engine. You reply with a JSON array and nothing else.' },
+                        { role: 'user', content: promptFor(slice, language) },
+                    ],
+                    abort?.signal,
+                    TRANSLATE_TOKENS
+                );
+            } catch (err) {
+                if (err.name === 'AbortError') { addStep('Stopped', 'by you'); return; }
+                addStep('Model error', err.message, 'err');
+                return;
+            }
+            pairs = parseJsonArray(reply);
+            if (pairs?.length) break;
+            if (attempt === 1) addStep('Retrying', 'reply was cut short — halving the batch');
+        }
+
+        if (!pairs?.length) {
+            addStep('Batch skipped', 'model would not return usable JSON', 'err');
+            continue;
+        }
+
+        try {
+            const [res] = await chrome.scripting.executeScript({
+                target: { tabId: workTabId },
+                func: writeTranslations,
+                args: [pairs],
+            });
+            done += res.result?.written || 0;
+            addStep('Applied', `${done} of ${nodes.length}`, 'ok');
+            captureShot();   // the page visibly changes language as batches land
+        } catch (err) {
+            addStep('Write failed', err.message, 'err');
+            break;
+        }
+    }
+
+    addMessage(
+        'agent',
+        done
+            ? `Translated **${done}** of ${nodes.length} text segments on _${live.title}_ into **${language}**, in place on the page.\n\nReload the tab to get the original back.`
+            : `I could not translate that page.`,
+        true
+    );
+    await pushActivity({
+        task: `Translate page → ${language}`,
+        steps: Math.ceil(nodes.length / TRANSLATE_BATCH),
+        at: Date.now(),
+        seconds: 0,
+        answer: `${done}/${nodes.length} segments · ${live.title}`,
+    });
+}
+
+function promptFor(items, language) {
+    return `Translate the "t" value of each object into ${language}.
+
+Reply with ONLY a JSON array: [{"i":<same i>,"t":"<translation>"}]
+- Exactly ${items.length} objects, same "i" values, same order.
+- Do not translate URLs, code, numbers or brand names — copy them through.
+- No commentary, no markdown fence, no trailing text.
+
+${JSON.stringify(items)}`;
+}
+
+/** Same salvage logic as parseAction, for a top-level array. */
+function parseJsonArray(reply) {
+    let text = reply.trim().replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    text = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+    try {
+        const parsed = JSON.parse(text);
+        return Array.isArray(parsed) ? parsed : null;
+    } catch {
+        const start = text.indexOf('[');
+        const end = text.lastIndexOf(']');
+        if (start === -1 || end <= start) return null;
+        try {
+            const parsed = JSON.parse(text.slice(start, end + 1));
+            return Array.isArray(parsed) ? parsed : null;
+        } catch {
+            return null;
+        }
+    }
 }
 
 async function submit(preset) {
@@ -599,8 +1123,8 @@ async function submit(preset) {
         busy = false;
         abort = null;
         $('send').disabled = false;
-        stopShots();
-        tickShot();
+        stopPreview();
+        await refreshTabList();
         setLive(false, 'Idle');
         setStatus('');
         input.focus();
@@ -667,10 +1191,6 @@ document.addEventListener('click', (e) => {
     if (chip) submit(chip.dataset.task);
 });
 
-// Tabs. Declared before the handlers that close over it so the binding is
-// initialised no matter when they fire.
-let previewOn = true;
-
 for (const tab of document.querySelectorAll('.tab')) {
     tab.addEventListener('click', () => {
         for (const t of document.querySelectorAll('.tab')) {
@@ -688,24 +1208,45 @@ $('previewBtn').addEventListener('click', () => {
     previewOn = !previewOn;
     $('previewBtn').setAttribute('aria-pressed', String(previewOn));
     $('preview').classList.toggle('on', previewOn);
+    if (previewOn) { if (busy) startPreview(); }
+    else stopPreview();   // detaches, so the debugging bar goes away
 });
 
 $('stopBtn').addEventListener('click', () => {
     if (abort) abort.abort();
 });
 
+// The work tab lives beside the cockpit now, so "go there" means activating it.
 $('openTab').addEventListener('click', async () => {
-    if (workWindowId !== null) {
-        await chrome.windows.update(workWindowId, { focused: true, drawAttention: true });
-    }
+    if (workTabId === null) return;
+    const tab = await chrome.tabs.get(workTabId).catch(() => null);
+    if (tab) await chrome.tabs.update(workTabId, { active: true });
 });
 
 // Translate acts as a shortcut that writes a task, so it goes through the same
 // loop as everything else rather than being a second code path.
-$('translate').addEventListener('change', (e) => {
-    const lang = e.target.value;
+$('translate').addEventListener('change', async (e) => {
+    const language = e.target.value;
     e.target.value = '';
-    if (lang) submit(`Translate the page I have open into ${lang} and give me the translation.`);
+    if (!language || busy) return;
+
+    busy = true;
+    abort = new AbortController();
+    $('send').disabled = true;
+    addMessage('user', `Translate this page into ${language}`);
+    try {
+        await runTranslate(language);
+    } catch (err) {
+        addStep('Error', err.message, 'err');
+    } finally {
+        busy = false;
+        abort = null;
+        $('send').disabled = false;
+        stopPreview();
+        await refreshTabList();
+        setLive(false, 'Idle');
+        setStatus('');
+    }
 });
 
 // Settings
@@ -784,10 +1325,13 @@ if (!Recognition) {
 
 /* ------------------------------------------------------------------- boot -- */
 
+window.addEventListener('beforeunload', () => { stopPreview(); });
+
 (async () => {
     const [settings, memory] = await Promise.all([loadSettings(), loadMemory()]);
     if (!settings.apiKey) setStatus('Add a key in Settings');
     $('memory').value = memory;
     setLive(false, 'Idle');
+    await refreshTabList();
     $('input').focus();
 })();

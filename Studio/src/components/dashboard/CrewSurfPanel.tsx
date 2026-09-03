@@ -109,8 +109,8 @@ export default function CrewSurfPanel() {
                         CrewSurf
                     </h1>
                     <p className="text-muted-foreground mt-2 max-w-xl">
-                        A second browser that sits beside Chrome, built for agents to drive. Use it
-                        when you want a task to run somewhere other than your everyday windows.
+                        Your own browser for agents. Give it a task from the cockpit and it works in
+                        its own window — so you can watch, or carry on with something else.
                     </p>
                 </div>
             </div>
@@ -233,7 +233,7 @@ export default function CrewSurfPanel() {
                     <WayCard
                         icon={Globe}
                         title="CrewSurf"
-                        body="A separate browser with its own profile and a chat cockpit on the new tab. Give it a task and it drives its own tabs — reading, clicking and typing."
+                        body="Its own browser and its own profile, with a Qwen cockpit on the new tab. Work happens in a side window you can watch live."
                     />
                 </div>
                 <p className="text-sm text-muted-foreground mt-5 leading-relaxed">
