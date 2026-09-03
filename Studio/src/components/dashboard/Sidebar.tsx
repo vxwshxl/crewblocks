@@ -2,9 +2,9 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Blocks, Key, Settings } from 'lucide-react';
+import { Blocks, Key, Globe, Settings, type LucideIcon } from 'lucide-react';
 
-export type TabType = 'agents' | 'apikeys' | 'squads' | 'marketplace' | 'pricings' | 'tutorials' | 'settings';
+export type TabType = 'agents' | 'apikeys' | 'crewser' | 'squads' | 'marketplace' | 'pricings' | 'tutorials' | 'settings';
 
 interface SidebarProps {
     activeTab: TabType;
@@ -26,6 +26,7 @@ export default function Sidebar({ activeTab, onTabChange }: SidebarProps) {
                 {[
                     { id: 'agents', label: 'Agents', icon: Blocks },
                     { id: 'apikeys', label: 'API Keys', icon: Key },
+                    { id: 'crewser', label: 'Crewser', icon: Globe },
                     { type: 'divider' },
                     { id: 'settings', label: 'Profile Settings', icon: Settings },
                 ].map((item, idx) => {
@@ -33,7 +34,7 @@ export default function Sidebar({ activeTab, onTabChange }: SidebarProps) {
                         return <div key={`div-${idx}`} className="my-3 mx-4 border-t border-white/5 pt-3" />;
                     }
                     
-                    const menuBtn = item as { id: TabType; label: string; icon: any };
+                    const menuBtn = item as { id: TabType; label: string; icon: LucideIcon };
                     const Icon = menuBtn.icon;
                     const isActive = activeTab === menuBtn.id;
                     

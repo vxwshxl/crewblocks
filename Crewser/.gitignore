@@ -1,0 +1,5 @@
+# The browser itself is a 150 MB+ binary and a third-party build.
+# It is installed by ./install.sh, never committed.
+*.dmg
+*.app/
+.cache/

@@ -5,6 +5,7 @@ import AnimatedLoader from '@/components/AnimatedLoader';
 import Sidebar, { TabType } from '@/components/dashboard/Sidebar';
 import ChatflowsList from '@/components/dashboard/ChatflowsList';
 import ApiKeysList from '@/components/dashboard/ApiKeysList';
+import CrewserPanel from '@/components/dashboard/CrewserPanel';
 import { Key, BookOpen, ShoppingCart, Settings } from 'lucide-react';
 import TutorialsList from '@/components/dashboard/TutorialsList';
 import MarketplaceList from '@/components/dashboard/MarketplaceList';
@@ -119,6 +120,7 @@ export default function DashboardPage() {
                             <div className="min-h-[calc(100vh-3.5rem)]">
                                 {activeTab === 'agents' && <ChatflowsList />}
                                 {activeTab === 'apikeys' && <ApiKeysList />}
+                                {activeTab === 'crewser' && <CrewserPanel />}
                                 {activeTab === 'squads' && <SquadsList />}
                                 {activeTab === 'marketplace' && <MarketplaceList />}
                                 {activeTab === 'pricings' && <PricingsList />}
