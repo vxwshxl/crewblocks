@@ -1512,6 +1512,17 @@ async function settlePage() {
  */
 const REPEAT_LIMIT = 3;
 
+/**
+ * Identical page states before we say something, and before we give up.
+ *
+ * These were one number, 3, and it was fatal. The step and time budgets are the
+ * real backstops — they are what stop a genuinely stuck run — so this guard's
+ * job is to notice a stall early and say so, not to end the task on the first
+ * evidence of one.
+ */
+const NO_PROGRESS_WARN = 3;
+const NO_PROGRESS_LIMIT = 8;
+
 function hostAllowed(rawUrl, allowlist) {
     if (!allowlist || !allowlist.length) return true;
     try {
@@ -1580,13 +1591,32 @@ async function runAgentLoop(options) {
             const signature = context.stateSignature || `${context.url}|${run.step}`;
 
             // The classic deadlock is "the page did not change and the model
-            // tried the same thing again". Catch it on the third repeat rather
-            // than burning the whole step budget discovering it.
+            // tried the same thing again". But an identical signature is not
+            // proof of a stuck agent — it is equally often a page whose change
+            // we could not see. Killing the run on the third one ended tasks
+            // that were going fine, so the third one now coaches and only a
+            // persistent stall stops anything.
             run.seen[signature] = (run.seen[signature] || 0) + 1;
-            if (run.seen[signature] >= 3) {
+            const seenCount = run.seen[signature];
+
+            if (seenCount >= NO_PROGRESS_LIMIT) {
                 bankWorkedTime();
-                await finish('NO_PROGRESS_LOOP', `The page has looked identical for ${run.seen[signature]} turns at ${context.url}.`);
+                await finish('NO_PROGRESS_LOOP', `The page has looked identical for ${seenCount} turns at ${context.url}.`);
                 return;
+            }
+
+            if (seenCount >= NO_PROGRESS_WARN) {
+                chatHistory.push({
+                    role: 'user',
+                    content:
+                        `The page has looked the same for ${seenCount} turns. Whatever you have been ` +
+                        'trying is not moving it. Read the ELEMENTS table again as if for the first ' +
+                        'time: a field that already holds the right text is done, and an overlay or ' +
+                        'suggestion list may be hiding the controls you want — pressing Enter or ' +
+                        'Escape can clear it. Try a different element or a different action, and ' +
+                        'ANSWER if there is genuinely nothing left to try.'
+                });
+                addActivityLog('system', `Page unchanged for ${seenCount} turns, nudging`);
             }
 
             // 2. See the page, but only when looking will actually tell us

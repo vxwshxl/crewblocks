@@ -197,7 +197,12 @@ async function runOpenAICompatible(request: ModelRequest, spec: ModelSpec): Prom
                 model: spec.id,
                 messages: toOpenAIMessages(request, spec),
                 temperature: request.temperature,
-                max_tokens: 1024,
+                // An action is a handful of fields, but the model also emits
+                // usedTool, citations and prose alongside them, and 1024 was
+                // being hit mid-string — producing a reply that could not parse
+                // and burning the turn. The ceiling is on a single action, so
+                // the extra headroom costs nothing when it is not needed.
+                max_tokens: 2048,
                 response_format: { type: 'json_object' },
             }),
         });

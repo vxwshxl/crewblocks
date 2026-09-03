@@ -365,11 +365,19 @@ function hasOpenSuggestions(el) {
             }
         }
 
-        // A combobox with an autocomplete behaviour that did not say so in ARIA.
-        const role = (el.getAttribute('role') || '').toLowerCase();
-        if (role === 'combobox' && el.getAttribute('aria-autocomplete')) {
-            const list = document.querySelector('[role="listbox"]');
-            if (list && isVisible(list) && list.getBoundingClientRect().height > 0) return true;
+        // Geometry, for the many autocompletes that expose none of the above.
+        // A suggestion list is a visible listbox sitting directly under the field
+        // and overlapping it horizontally — which is also exactly the shape that
+        // covers the inputs below and erases them from the element table.
+        const field = el.getBoundingClientRect();
+        for (const list of queryAllDeep('[role="listbox"], [role="option"], [aria-autocomplete] + *')) {
+            if (!isVisible(list)) continue;
+            const box = list.getBoundingClientRect();
+            if (box.height < 8 || box.width < 8) continue;
+
+            const below = box.top >= field.top && box.top <= field.bottom + 24;
+            const overlapsX = box.left < field.right && box.right > field.left;
+            if (below && overlapsX) return true;
         }
     } catch (e) {
         /* no suggestions we can prove */

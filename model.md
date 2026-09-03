@@ -388,7 +388,7 @@ maxSteps 25 · maxWallClock 5 min · maxConsecutiveErrors 3 · actionTimeout 10 
 |---|---|---|
 | Step budget | 25 steps elapsed | `STEP_BUDGET_EXCEEDED` |
 | Working time | 5 minutes of *working* time — time spent waiting on a person does not count (§5) | `TIME_BUDGET_EXCEEDED` |
-| **State repeat** | `hash(url + DOM signature + scrollY)` seen 3× | `NO_PROGRESS_LOOP` |
+| **State repeat** | identical state 3× nudges the model, 8× stops the run | `NO_PROGRESS_LOOP` |
 | Action repeat | same action + id **3 times**, state unchanged, each retry told the last did nothing | `REPEATED_ACTION` |
 | Error streak | 3 failed actions in a row | `CONSECUTIVE_ERRORS` |
 | Action timeout | 10 s with no DOM settle | `ACTION_TIMEOUT` |
@@ -435,6 +435,30 @@ content script refuses a `CLICK` or `TYPE` whose *target* is a password or
 card-number field, and that refusal comes back as a normal action error the model
 must work around. Page-level sensitivity is passed to the model as context, not as
 a kill switch.
+
+**The unparseable replies were truncation, and the log finally showed it.** The raw sample the
+repair turn logs came back cut mid-string:
+
+```
+{"action":"CLICK","elementId":20, "usedTool":"Multi-task Agent",
+ "citations":[{"claim":"Compose new email","url":"..."}],
+ "text":"Compose new email to ...",
+ "note":"User asked to send an email via Gmail with specific content and a li
+```
+
+`max_tokens` was 1024, and the action itself is two fields — everything after it is the model
+volunteering `usedTool`, `citations`, prose, and an invented `note`. The ceiling is per action, so
+the headroom costs nothing when it is not used: it is 2048 now, and protocol rule 12 asks for the
+action's fields only, with `usedTool` and `citations` reserved for turns that actually used SEARCH
+or READ_URL. This is also why the failure could not be reproduced from a hand-built prompt — the
+verbosity comes from the compiled stack sitting above the protocol, not from the protocol.
+
+**Guards coach before they kill.** `NO_PROGRESS_LOOP` at three identical states was ending runs on
+its own evidence, and an identical signature is not proof of a stuck agent — it is as often a page
+whose change we could not see. Three states now push a nudge into the conversation (*read the table
+again, a filled field is done, an overlay may be hiding what you want*) and only eight stop the run.
+The step and time budgets were always the real backstops; this guard's job is to notice a stall
+early and say so.
 
 **An unparseable reply gets one repair turn.** This row was aspirational until now: nothing
 retried, so the *first* reply that would not parse ended the run and surfaced the raw parser

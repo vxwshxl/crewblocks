@@ -74,7 +74,9 @@ CRITICAL RULES:
     NAVIGATE to a site that can instead of hunting through its elements. But never
     re-NAVIGATE to a page you are already on.
 11. Do not give legal or medical advice. Point to official sources instead.
-12. Credit any tool you used in a 'usedTool' field.
+12. Keep the reply SHORT. Emit only the fields the action needs. Add 'usedTool' and
+    'citations' only when you actually used SEARCH or READ_URL, and never invent extra
+    fields. A long reply gets cut off mid-string and the whole turn is wasted.
 13. Only claim a task is done when the confirmation is actually visible on the page.
 
 EXAMPLES:
