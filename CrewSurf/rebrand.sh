@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Rebrands the installed browser as Crewser.
+# Rebrands the installed browser as CrewSurf.
 #
 # This runs against the app `install.sh` produced, and `install.sh` calls it at
 # the end — so a reinstall re-applies the branding rather than reverting it.
@@ -27,9 +27,9 @@
 #
 set -euo pipefail
 
-BRAND="Crewser"
+BRAND="CrewSurf"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP="${1:-$HERE/Crewser.app}"
+APP="${1:-$HERE/CrewSurf.app}"
 LOGO="$HERE/../Studio/public/logoCS.png"
 
 # `--in-place` says the caller already handed us a scratch copy, so we edit it
@@ -145,8 +145,8 @@ echo "Rebranding the bundled agent extensions…"
 mkdir -p "$HERE/.cache/crx-keys"
 python3 "$HERE/tools/rebrand_extensions.py" \
   "$WORK" "$HERE/.cache/crx-keys" "$STAGE/crx" "$LOGO" \
-  "BrowserOS neo=$BRAND" "BrowserClaw=$BRAND" "browserclaw=crewser" \
-  "BrowserOS=$BRAND" "browseros=crewser" || echo "  extension rebrand skipped" >&2
+  "BrowserOS neo=$BRAND" "BrowserClaw=$BRAND" "browserclaw=crewsurf" \
+  "BrowserOS=$BRAND" "browseros=crewsurf" || echo "  extension rebrand skipped" >&2
 
 # ---------------------------------------------------------------- signing --
 # Extended attributes left by the copy make codesign refuse with "resource fork,

@@ -3,3 +3,7 @@
 *.dmg
 *.app/
 .cache/
+
+# Python bytecode from the rebrand tools
+__pycache__/
+*.pyc

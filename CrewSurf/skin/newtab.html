@@ -1,151 +1,314 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Crewser</title>
+<title>CrewSurf</title>
 <style>
+  /* Light by deliberate choice — CrewSurf sits beside pages that are mostly
+     light, and a dark cockpit next to a white page is a flashbang every time
+     the preview updates. */
   :root {
-    --bg: #0a0a0a; --elevated: #1a1a1a; --border: #262626; --border-strong: #383838;
-    --fg: #fafafa; --muted: #a1a1a1; --accent: #b7f34c; --accent-fg: #0a0a0a;
-    --warn: #e5c07b; --danger: #e06c75; --ok: #7cd992;
-    --radius: 14px; --motion: 120ms cubic-bezier(0.2, 0, 0, 1);
+    --bg:        #ffffff;
+    --sunken:    #f6f6f7;
+    --surface:   #ffffff;
+    --border:    #e6e6e8;
+    --border-2:  #d3d3d7;
+    --fg:        #17171a;
+    --muted:     #6b6b73;
+    --faint:     #9a9aa2;
+    --accent:    #d6217f;
+    --accent-fg: #ffffff;
+    --accent-wash:#fdeef6;
+    --ok:        #157f4d;
+    --warn:      #8a6100;
+    --danger:    #c02626;
+    --r:         12px;
+    --motion:    120ms cubic-bezier(0.2, 0, 0, 1);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--fg);
-    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    display: flex; flex-direction: column;
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
   }
+  button, select, input, textarea { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  /* ------------------------------------------------------------- header -- */
   header {
-    display: flex; align-items: center; gap: 12px;
-    padding: 16px 20px; border-bottom: 1px solid var(--border); flex: none;
+    display: flex; align-items: center; gap: 10px; flex: none;
+    padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--surface);
   }
-  header img { width: 24px; height: 24px; border-radius: 6px; }
-  header .name { font-weight: 650; letter-spacing: -0.01em; }
-  header .spacer { flex: 1; }
-  select, input, button, textarea { font: inherit; color: inherit; }
-  select, .field {
-    background: var(--elevated); border: 1px solid var(--border);
-    border-radius: 999px; padding: 8px 12px; min-height: 36px;
-    transition: border-color var(--motion);
+  header img { width: 22px; height: 22px; border-radius: 6px; }
+  .brand { font-weight: 660; letter-spacing: -0.01em; margin-right: 6px; }
+  .grow { flex: 1; }
+  .pill {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+    padding: 7px 12px; min-height: 34px; cursor: pointer; transition: border-color var(--motion);
   }
-  select:hover, .field:hover { border-color: var(--border-strong); }
-  .icon-btn {
+  .pill:hover { border-color: var(--border-2); }
+  .iconbtn {
     background: transparent; border: 1px solid transparent; border-radius: 999px;
-    width: 36px; height: 36px; cursor: pointer; color: var(--muted);
+    width: 34px; height: 34px; cursor: pointer; color: var(--muted);
     display: grid; place-items: center; transition: all var(--motion);
   }
-  .icon-btn:hover { background: #ffffff10; color: var(--fg); }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .iconbtn:hover { background: var(--sunken); color: var(--fg); }
+  .iconbtn[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
 
-  main { flex: 1; overflow-y: auto; padding: 24px 20px; }
-  .wrap { max-width: 760px; margin: 0 auto; }
-
-  .hero { text-align: center; padding: 48px 0 32px; }
-  .hero img { width: 56px; height: 56px; border-radius: 14px; margin-bottom: 20px; }
-  .hero h1 { font-size: 30px; margin: 0 0 8px; letter-spacing: -0.02em; font-weight: 650; }
-  .hero p { color: var(--muted); margin: 0 auto; max-width: 460px; }
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 24px; }
-  .chip {
-    background: var(--elevated); border: 1px solid var(--border); color: var(--fg);
-    border-radius: 999px; padding: 8px 14px; cursor: pointer; min-height: 36px;
+  /* --------------------------------------------------------------- tabs -- */
+  .tabs { display: flex; gap: 4px; padding: 10px 18px 0; border-bottom: 1px solid var(--border); background: var(--surface); flex: none; }
+  .tab {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    padding: 8px 12px 10px; cursor: pointer; color: var(--muted); font-weight: 550;
     transition: all var(--motion);
   }
-  .chip:hover { border-color: var(--accent); color: var(--accent); }
+  .tab:hover { color: var(--fg); }
+  .tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
 
-  .msg { margin-bottom: 18px; display: flex; gap: 12px; }
-  .msg .who {
-    flex: none; width: 26px; height: 26px; border-radius: 8px; display: grid;
-    place-items: center; font-size: 11px; font-weight: 700; margin-top: 2px;
+  /* ---------------------------------------------------------- workspace -- */
+  .work { flex: 1; display: flex; min-height: 0; }
+  .panel { flex: 1; overflow-y: auto; padding: 22px; min-width: 0; }
+  .col { max-width: 720px; margin: 0 auto; }
+
+  /* ------------------------------------------------------------ preview -- */
+  aside {
+    width: 340px; flex: none; border-left: 1px solid var(--border);
+    background: var(--sunken); padding: 16px; overflow-y: auto; display: none;
   }
-  .msg.user .who { background: var(--border-strong); }
-  .msg.agent .who { background: var(--accent); color: var(--accent-fg); }
-  .msg .body { flex: 1; min-width: 0; white-space: pre-wrap; word-wrap: break-word; }
+  aside.on { display: block; }
+  .live { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700;
+          letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .dot.run { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.35 } }
+  @media (prefers-reduced-motion: reduce) { .dot.run { animation: none } }
 
-  .step {
-    border-left: 2px solid var(--border-strong); padding: 4px 0 4px 12px;
-    margin: 6px 0; color: var(--muted); font-size: 13px;
+  .shot {
+    width: 100%; aspect-ratio: 16 / 10; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface) center/cover no-repeat; display: grid; place-items: center;
+    color: var(--faint); font-size: 12px; overflow: hidden; margin-bottom: 10px;
   }
-  .step b { color: var(--fg); font-weight: 600; }
-  .step.err { border-color: var(--danger); color: var(--danger); }
-  .step.ok  { border-color: var(--ok); }
+  .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; display: block; }
+  .where { font-size: 12px; color: var(--muted); word-break: break-all; margin-bottom: 12px; }
+  .where b { color: var(--fg); font-weight: 600; display: block; }
 
-  footer { flex: none; border-top: 1px solid var(--border); padding: 14px 20px; }
-  .composer { max-width: 760px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
+  .steps { border-top: 1px solid var(--border); padding-top: 12px; }
+  .step { display: flex; gap: 8px; padding: 5px 0; font-size: 13px; color: var(--muted); }
+  .step .k { color: var(--fg); font-weight: 600; flex: none; }
+  .step.err { color: var(--danger); }
+  .step.err .k { color: var(--danger); }
+
+  .asideRow { display: flex; gap: 8px; margin-top: 14px; }
+  .asideRow .pill { flex: 1; text-align: center; }
+
+  /* ------------------------------------------------------------- thread -- */
+  .hero { text-align: center; padding: 40px 0 28px; }
+  .hero img { width: 52px; height: 52px; border-radius: 13px; margin-bottom: 16px; }
+  .hero h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.02em; font-weight: 660; }
+  .hero p { color: var(--muted); margin: 0 auto; max-width: 430px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 22px; }
+  .chip {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+    padding: 8px 14px; cursor: pointer; min-height: 36px; transition: all var(--motion);
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
+
+  .msg { display: flex; gap: 11px; margin-bottom: 20px; }
+  .avatar {
+    flex: none; width: 25px; height: 25px; border-radius: 7px; display: grid; place-items: center;
+    font-size: 10px; font-weight: 700; margin-top: 3px;
+  }
+  .msg.user .avatar { background: var(--sunken); color: var(--muted); border: 1px solid var(--border); }
+  .msg.agent .avatar { background: var(--accent); color: var(--accent-fg); }
+  .bubble { flex: 1; min-width: 0; }
+
+  /* markdown */
+  .md > *:first-child { margin-top: 0; }
+  .md > *:last-child { margin-bottom: 0; }
+  .md h1, .md h2, .md h3 { font-size: 15px; font-weight: 660; margin: 18px 0 8px; letter-spacing: -0.01em; }
+  .md p { margin: 0 0 10px; }
+  .md ul, .md ol { margin: 0 0 10px; padding-left: 22px; }
+  .md li { margin-bottom: 4px; }
+  .md code {
+    background: var(--sunken); border: 1px solid var(--border); border-radius: 5px;
+    padding: 1px 5px; font-size: 12.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .md pre {
+    background: var(--sunken); border: 1px solid var(--border); border-radius: 9px;
+    padding: 12px 14px; overflow-x: auto; margin: 0 0 12px;
+  }
+  .md pre code { background: none; border: none; padding: 0; }
+  .md a { color: var(--accent); text-underline-offset: 3px; }
+  .md blockquote {
+    margin: 0 0 10px; padding-left: 12px; border-left: 3px solid var(--border-2); color: var(--muted);
+  }
+  .md table { border-collapse: collapse; width: 100%; margin: 0 0 12px; font-size: 13px; display: block; overflow-x: auto; }
+  .md th, .md td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  .md th { background: var(--sunken); font-weight: 600; }
+  .md hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+  .empty { color: var(--muted); text-align: center; padding: 56px 20px; }
+
+  /* ------------------------------------------------------------ composer -- */
+  footer { flex: none; border-top: 1px solid var(--border); padding: 12px 18px 16px; background: var(--surface); }
+  .composer { max-width: 720px; margin: 0 auto; }
+  .inputWrap {
+    display: flex; align-items: flex-end; gap: 8px; background: var(--surface);
+    border: 1px solid var(--border-2); border-radius: 14px; padding: 6px 6px 6px 14px;
+    transition: border-color var(--motion);
+  }
+  .inputWrap:focus-within { border-color: var(--accent); }
   textarea {
-    flex: 1; background: var(--elevated); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 12px 14px; resize: none; min-height: 46px;
-    max-height: 160px; transition: border-color var(--motion);
+    flex: 1; border: none; background: none; resize: none; padding: 9px 0;
+    min-height: 24px; max-height: 180px; outline: none;
   }
-  textarea:hover { border-color: var(--border-strong); }
+  .langSel {
+    border: none; background: none; color: var(--muted); cursor: pointer;
+    padding: 6px 2px; min-height: 34px;
+  }
   .send {
     background: var(--accent); color: var(--accent-fg); border: none; cursor: pointer;
-    border-radius: 999px; width: 46px; height: 46px; font-size: 17px; flex: none;
+    border-radius: 999px; width: 34px; height: 34px; flex: none; font-size: 15px;
     transition: filter var(--motion);
   }
-  .send:hover:not(:disabled) { filter: brightness(1.1); }
-  .send:disabled { opacity: 0.45; cursor: not-allowed; }
+  .send:hover:not(:disabled) { filter: brightness(1.08); }
+  .send:disabled { opacity: 0.4; cursor: not-allowed; }
+  .hintbar { display: flex; align-items: center; gap: 10px; margin: 8px 2px 0; font-size: 12px; color: var(--faint); }
 
+  /* ------------------------------------------------------------- dialog -- */
   dialog {
-    background: var(--elevated); color: var(--fg); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 24px; max-width: 460px; width: 92%;
+    background: var(--surface); color: var(--fg); border: 1px solid var(--border);
+    border-radius: var(--r); padding: 22px; max-width: 460px; width: 92%;
+    box-shadow: 0 16px 48px rgb(0 0 0 / 14%);
   }
-  dialog::backdrop { background: #000000aa; }
-  dialog h2 { margin: 0 0 4px; font-size: 17px; }
-  dialog .hint { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
-  label { display: block; margin-bottom: 14px; }
-  label span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-  label input {
-    width: 100%; background: var(--bg); border: 1px solid var(--border);
-    border-radius: 10px; padding: 10px 12px; min-height: 40px;
+  dialog::backdrop { background: rgb(0 0 0 / 26%); }
+  dialog h2 { margin: 0 0 4px; font-size: 16px; }
+  dialog .sub { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+  label { display: block; margin-bottom: 13px; }
+  label span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  label input, label textarea.mem {
+    width: 100%; background: var(--bg); border: 1px solid var(--border-2);
+    border-radius: 9px; padding: 9px 11px; min-height: 38px;
   }
-  .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
+  .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
   .btn {
-    border-radius: 999px; padding: 9px 18px; min-height: 40px; cursor: pointer;
-    border: 1px solid var(--border); background: transparent; transition: all var(--motion);
+    border-radius: 999px; padding: 9px 17px; min-height: 38px; cursor: pointer;
+    border: 1px solid var(--border-2); background: var(--surface); transition: all var(--motion);
   }
-  .btn:hover { border-color: var(--border-strong); }
+  .btn:hover { background: var(--sunken); }
   .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
-  .btn.primary:hover { filter: brightness(1.1); }
-  .status { font-size: 12px; color: var(--muted); }
+  .btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
 </style>
 
 <header>
   <img src="icon/128.png" alt="">
-  <span class="name">Crewser</span>
-  <span class="spacer"></span>
-  <span class="status" id="status"></span>
-  <select id="model" aria-label="Model">
+  <span class="brand">CrewSurf</span>
+
+  <select id="model" class="pill" aria-label="Model">
     <option value="cloud">Qwen · Cloud</option>
     <option value="local">Qwen · Local</option>
   </select>
-  <button class="icon-btn" id="settingsBtn" aria-label="Settings" title="Settings">⚙</button>
+
+  <select id="translate" class="pill" aria-label="Translate page to">
+    <option value="">Translate…</option>
+    <option value="Hindi">Hindi</option>
+    <option value="Bodo">Bodo</option>
+    <option value="Assamese">Assamese</option>
+    <option value="Bengali">Bengali</option>
+    <option value="Spanish">Spanish</option>
+    <option value="French">French</option>
+    <option value="Japanese">Japanese</option>
+  </select>
+
+  <span class="grow"></span>
+  <span id="status" style="font-size:12px;color:var(--muted)"></span>
+  <button class="iconbtn" id="previewBtn" aria-pressed="true" aria-label="Toggle live view" title="Live view">▦</button>
+  <button class="iconbtn" id="settingsBtn" aria-label="Settings" title="Settings">⚙</button>
 </header>
 
-<main>
-  <div class="wrap" id="thread">
-    <div class="hero" id="hero">
-      <img src="icon/128.png" alt="">
-      <h1>What should I do?</h1>
-      <p>Give me a task and I'll work through it in this browser — reading pages, clicking, typing and navigating for you.</p>
-      <div class="chips">
-        <button class="chip" data-task="Summarise the page in the active tab">Summarise this page</button>
-        <button class="chip" data-task="Search Google for the current weather and tell me the result">Search the web</button>
-        <button class="chip" data-task="List every link on the current page with its text">Extract links</button>
+<div class="tabs" role="tablist">
+  <button class="tab" role="tab" id="tab-chat" aria-selected="true" aria-controls="p-chat">Chat</button>
+  <button class="tab" role="tab" id="tab-activity" aria-selected="false" aria-controls="p-activity">Activity</button>
+  <button class="tab" role="tab" id="tab-memory" aria-selected="false" aria-controls="p-memory">Memory</button>
+</div>
+
+<div class="work">
+  <div class="panel">
+    <div class="col">
+      <div id="p-chat" role="tabpanel" aria-labelledby="tab-chat">
+        <div id="thread">
+          <div class="hero" id="hero">
+            <img src="icon/128.png" alt="">
+            <h1>What should I do?</h1>
+            <p>Give me a task. I'll work it through in a side window and you can watch every step from here.</p>
+            <div class="chips">
+              <button class="chip" data-task="Summarise the page I have open">Summarise this page</button>
+              <button class="chip" data-task="Search the web for today's top technology news and summarise it">Search the web</button>
+              <button class="chip" data-task="Find and fill the form on the current page">Fill this form</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="p-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
+        <div id="activityList"></div>
+      </div>
+
+      <div id="p-memory" role="tabpanel" aria-labelledby="tab-memory" hidden>
+        <p style="color:var(--muted);margin-top:0">
+          Anything here is given to the model on every task — your name, how you like answers,
+          sites you use. Kept on this Mac only.
+        </p>
+        <label>
+          <span>Memory</span>
+          <textarea class="mem" id="memory" rows="10" placeholder="e.g. I'm Vee. Prefer short answers. My email is on Gmail."></textarea>
+        </label>
+        <div class="row" style="justify-content:flex-start">
+          <button class="btn primary" id="saveMemory">Save memory</button>
+          <span id="memSaved" style="align-self:center;font-size:12px;color:var(--ok)"></span>
+        </div>
       </div>
     </div>
   </div>
-</main>
+
+  <aside id="preview" class="on" aria-label="Live view">
+    <div class="live"><span class="dot" id="liveDot"></span><span id="liveLabel">Idle</span></div>
+    <div class="shot" id="shot">No page yet</div>
+    <div class="where"><b id="whereTitle">—</b><span id="whereUrl"></span></div>
+    <div class="steps" id="steps"></div>
+    <div class="asideRow">
+      <button class="pill" id="openTab">Open window</button>
+      <button class="pill" id="stopBtn">Stop</button>
+    </div>
+  </aside>
+</div>
 
 <footer>
   <div class="composer">
-    <textarea id="input" rows="1" placeholder="Give Crewser a task…" aria-label="Task"></textarea>
-    <button class="send" id="send" aria-label="Run task">↑</button>
+    <div class="inputWrap">
+      <textarea id="input" rows="1" placeholder="Ask anything, or give a task…" aria-label="Task"></textarea>
+      <select id="lang" class="langSel" aria-label="Speech language">
+        <option value="en-US">EN</option>
+        <option value="hi-IN">HI</option>
+        <option value="as-IN">AS</option>
+        <option value="bn-IN">BN</option>
+        <option value="es-ES">ES</option>
+        <option value="fr-FR">FR</option>
+        <option value="ja-JP">JA</option>
+      </select>
+      <button class="iconbtn" id="micBtn" aria-pressed="false" aria-label="Dictate" title="Dictate">🎤</button>
+      <button class="send" id="send" aria-label="Run">↑</button>
+    </div>
+    <div class="hintbar">
+      <span id="hint">Enter to run · Shift+Enter for a new line</span>
+    </div>
   </div>
 </footer>
 
 <dialog id="settings">
   <h2>Models</h2>
-  <p class="hint">Crewser runs on Qwen — cloud through OpenRouter, or the local server on this Mac.</p>
+  <p class="sub">CrewSurf runs on Qwen — cloud through OpenRouter, or the local server on this Mac.</p>
   <label>
     <span>OpenRouter API key (cloud)</span>
     <input type="password" id="apiKey" placeholder="sk-or-v1-…" autocomplete="off">
@@ -168,4 +331,5 @@
   </div>
 </dialog>
 
-<script src="crewser-cockpit.js"></script>
+<script src="markdown.js"></script>
+<script src="crewsurf-cockpit.js"></script>

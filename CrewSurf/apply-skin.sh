@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Takes over the agent extension inside the Crewser profile.
+# Takes over the agent extension inside the CrewSurf profile.
 #
 # Why this exists: the browser ships an agent extension but then *replaces it at
 # runtime* with a newer copy from the vendor's CDN. Rebranding the copy inside
@@ -17,23 +17,23 @@
 #
 set -euo pipefail
 
-BRAND="Crewser"
+BRAND="CrewSurf"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROFILE="${CREWSER_PROFILE:-$HOME/Library/Application Support/BrowserClaw}"
+PROFILE="${CREWSURF_PROFILE:-$HOME/Library/Application Support/BrowserClaw}"
 EXT_ROOT="$PROFILE/Default/Extensions"
 LOGO="$HERE/../Studio/public/logoCS.png"
 SKIN="$HERE/skin"
 
 if [[ ! -d "$EXT_ROOT" ]]; then
-  echo "No Crewser profile at $PROFILE." >&2
-  echo "Launch Crewser once so it creates one, then re-run this." >&2
+  echo "No CrewSurf profile at $PROFILE." >&2
+  echo "Launch CrewSurf once so it creates one, then re-run this." >&2
   exit 1
 fi
 
 echo "Quitting ${BRAND} if it is running…"
 osascript -e 'tell application id "com.browseros.BrowserClaw" to quit' 2>/dev/null || true
 sleep 2
-pkill -9 -f "Crewser.app/Contents/MacOS" 2>/dev/null || true
+pkill -9 -f "CrewSurf.app/Contents/MacOS" 2>/dev/null || true
 
 # The agent extension is the one that owns the new tab page.
 TARGET=""
@@ -54,11 +54,17 @@ if [[ -z "$TARGET" ]]; then
 fi
 echo "Found it: ${TARGET#$EXT_ROOT/}"
 
-BACKUP="$TARGET/.crewser-original"
+BACKUP="$TARGET/.crewsurf-original"
+# The stash used to be named for the old brand. Carry it across rather than
+# stashing a second copy of an already-modified extension, which would make
+# --restore restore the skin instead of the original.
+if [[ -d "$TARGET/.crewser-original" && ! -d "$BACKUP" ]]; then
+  mv "$TARGET/.crewser-original" "$BACKUP"
+fi
 if [[ "${1:-}" == "--restore" ]]; then
   if [[ -d "$BACKUP" ]]; then
     echo "Restoring the original extension…"
-    find "$TARGET" -maxdepth 1 -mindepth 1 ! -name ".crewser-original" -exec rm -rf {} +
+    find "$TARGET" -maxdepth 1 -mindepth 1 ! -name ".crewsurf-original" -exec rm -rf {} +
     cp -R "$BACKUP/." "$TARGET/"
     rm -rf "$BACKUP"
     echo "Restored."
@@ -71,7 +77,7 @@ fi
 if [[ ! -d "$BACKUP" ]]; then
   echo "Stashing the untouched original…"
   mkdir -p "$BACKUP"
-  find "$TARGET" -maxdepth 1 -mindepth 1 ! -name ".crewser-original" -exec cp -R {} "$BACKUP/" \;
+  find "$TARGET" -maxdepth 1 -mindepth 1 ! -name ".crewsurf-original" -exec cp -R {} "$BACKUP/" \;
 fi
 
 # ------------------------------------------------------------------ manifest --
@@ -107,7 +113,7 @@ if [[ -f "$LOGO" ]]; then
     size="$(basename "$png" | grep -oE '[0-9]+' | head -1)"
     [[ -z "$size" ]] && size=128
     sips -z "$size" "$size" "$LOGO" --out "$png" >/dev/null 2>&1 || true
-  done < <(find "$TARGET" -name "*.png" ! -path "*/.crewser-original/*" -print0)
+  done < <(find "$TARGET" -name "*.png" ! -path "*/.crewsurf-original/*" -print0)
 
   # Vector marks cannot be resampled from a PNG, so swap in one that embeds it.
   python3 - "$TARGET" "$LOGO" <<'PY'
@@ -117,7 +123,7 @@ data = base64.b64encode(open(logo, "rb").read()).decode()
 svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
        f'<image href="data:image/png;base64,{data}" width="512" height="512"/></svg>')
 for root, _dirs, files in os.walk(target):
-    if ".crewser-original" in root:
+    if ".crewsurf-original" in root:
         continue
     for name in files:
         if name.lower().endswith(".svg"):
@@ -126,12 +132,13 @@ PY
 fi
 
 # --------------------------------------------------------------------- pages --
-echo "Installing the Crewser cockpit…"
+echo "Installing the CrewSurf cockpit…"
 cp "$SKIN/newtab.html" "$TARGET/newtab.html"
-cp "$SKIN/crewser-cockpit.js" "$TARGET/crewser-cockpit.js"
+cp "$SKIN/crewsurf-cockpit.js" "$TARGET/crewsurf-cockpit.js"
+cp "$SKIN/markdown.js" "$TARGET/markdown.js"
 
 # ------------------------------------------------------------------ harness --
-# The MCP screen lists the coding agents it can pair with. Crewser drives itself
+# The MCP screen lists the coding agents it can pair with. CrewSurf drives itself
 # with Qwen, so that list is noise. The bundle carries the roster alongside an
 # empty "hidden" array that its filter checks against, so filling that array in
 # hides the lot without touching any rendering code.
@@ -148,7 +155,7 @@ pattern = re.compile(
 
 patched = 0
 for root, _dirs, names in os.walk(target):
-    if ".crewser-original" in root:
+    if ".crewsurf-original" in root:
         continue
     for name in names:
         if not name.endswith(".js"):
@@ -187,7 +194,7 @@ pairs = [("BrowserOS neo", brand), ("BrowserClaw", brand), ("browserclaw", brand
 exts = {".js", ".html", ".css", ".json", ".txt", ".md"}
 hits = files = 0
 for root, _dirs, names in os.walk(target):
-    if ".crewser-original" in root:
+    if ".crewsurf-original" in root:
         continue
     for name in names:
         if os.path.splitext(name)[1].lower() not in exts:
@@ -209,5 +216,5 @@ print(f"  {hits} strings across {files} files")
 PY
 
 echo
-echo "Done. Relaunch ${BRAND} — the new tab is now the Crewser cockpit."
+echo "Done. Relaunch ${BRAND} — the new tab is now the CrewSurf cockpit."
 echo "Undo any time with:  ./apply-skin.sh --restore"

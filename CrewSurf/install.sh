@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Installs the Crewser browser (a pinned BrowserOS neo build) into this folder.
+# Installs the CrewSurf browser (a pinned BrowserOS neo build) into this folder.
 #
 # The browser is a third-party AGPL-3.0 binary from browseros-ai/BrowserOS. We do
 # not vendor it into git — 150 MB of someone else's build has no business in this
@@ -15,7 +15,7 @@ set -euo pipefail
 VERSION="0.49.3.1"
 TAG="browserclaw/v0.49.3"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP="$HERE/Crewser.app"
+APP="$HERE/CrewSurf.app"
 CACHE="$HERE/.cache"
 
 # Apple silicon and Intel ship as separate images; universal is the safe fallback
@@ -37,7 +37,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 if [[ -d "$APP" && "${1:-}" != "--force" ]]; then
-  echo "Crewser is already installed at $APP"
+  echo "CrewSurf is already installed at $APP"
   echo "Re-run with --force to reinstall."
   exit 0
 fi
@@ -72,14 +72,14 @@ fi
 # has been launched from its final path, macOS App Management refuses further
 # writes into it, so "copy then modify" works exactly once and then starts
 # failing halfway through. "Modify then copy" always works.
-STAGED="$MOUNT_STAGE/Crewser.app"
+STAGED="$MOUNT_STAGE/CrewSurf.app"
 echo "Copying out of the image…"
 cp -R "$SRC" "$STAGED"
 
 cleanup
 
 echo
-echo "Applying Crewser branding…"
+echo "Applying CrewSurf branding…"
 echo
 "$HERE/rebrand.sh" "$STAGED" --in-place
 
@@ -103,5 +103,5 @@ touch "$APP"
 killall Dock 2>/dev/null || true
 
 echo
-echo "Launch it from the CrewBlocks dashboard (sidebar → Crewser), or:"
+echo "Launch it from the CrewBlocks dashboard (sidebar → CrewSurf), or:"
 echo "  open -a \"$APP\""

@@ -4,7 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { Blocks, Key, Globe, Settings, type LucideIcon } from 'lucide-react';
 
-export type TabType = 'agents' | 'apikeys' | 'crewser' | 'squads' | 'marketplace' | 'pricings' | 'tutorials' | 'settings';
+export type TabType = 'agents' | 'apikeys' | 'crewsurf' | 'squads' | 'marketplace' | 'pricings' | 'tutorials' | 'settings';
 
 interface SidebarProps {
     activeTab: TabType;
@@ -26,7 +26,7 @@ export default function Sidebar({ activeTab, onTabChange }: SidebarProps) {
                 {[
                     { id: 'agents', label: 'Agents', icon: Blocks },
                     { id: 'apikeys', label: 'API Keys', icon: Key },
-                    { id: 'crewser', label: 'Crewser', icon: Globe },
+                    { id: 'crewsurf', label: 'CrewSurf', icon: Globe },
                     { type: 'divider' },
                     { id: 'settings', label: 'Profile Settings', icon: Settings },
                 ].map((item, idx) => {

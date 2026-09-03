@@ -1,5 +1,5 @@
 /**
- * Launching the Crewser browser from the dashboard.
+ * Launching the CrewSurf browser from the dashboard.
  *
  * A web page cannot start a native application — that is a deliberate browser
  * sandbox, not an oversight. What makes this work is that in local development
@@ -25,9 +25,9 @@ const run = promisify(execFile);
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/** The app bundle `Crewser/install.sh` writes. */
-const APP_DIR_NAME = 'Crewser';
-const APP_BUNDLE = 'Crewser.app';
+/** The app bundle `CrewSurf/install.sh` writes. */
+const APP_DIR_NAME = 'CrewSurf';
+const APP_BUNDLE = 'CrewSurf.app';
 
 /**
  * True only for a dev server on the developer's own machine. `VERCEL` covers the
@@ -35,18 +35,18 @@ const APP_BUNDLE = 'Crewser.app';
  * explicit opt-out lets a packaged desktop build turn this on deliberately.
  */
 function isLocalDev(): boolean {
-    if (process.env.CREWSER_ALLOW_LAUNCH === '1') return true;
+    if (process.env.CREWSURF_ALLOW_LAUNCH === '1') return true;
     if (process.env.VERCEL || process.env.NETLIFY || process.env.AWS_REGION) return false;
     return process.env.NODE_ENV !== 'production';
 }
 
 /**
- * Walk up from the Next cwd (`Studio/`) looking for the sibling `Crewser` folder,
+ * Walk up from the Next cwd (`Studio/`) looking for the sibling `CrewSurf` folder,
  * so this keeps working if the repo is nested or the dev server is started from
  * somewhere unexpected.
  */
 function resolveAppPath(): string | null {
-    const override = process.env.CREWSER_APP_PATH;
+    const override = process.env.CREWSURF_APP_PATH;
     if (override) return override;
 
     let dir = process.cwd();
@@ -119,7 +119,7 @@ export async function GET() {
 export async function POST() {
     if (process.platform !== 'darwin') {
         return NextResponse.json(
-            { error: 'Crewser is macOS-only for now.', code: 'UNSUPPORTED_PLATFORM' },
+            { error: 'CrewSurf is macOS-only for now.', code: 'UNSUPPORTED_PLATFORM' },
             { status: 400 }
         );
     }
@@ -127,7 +127,7 @@ export async function POST() {
     if (!isLocalDev()) {
         return NextResponse.json(
             {
-                error: 'Crewser can only be launched from a local dev server, not a hosted deploy.',
+                error: 'CrewSurf can only be launched from a local dev server, not a hosted deploy.',
                 code: 'NOT_LOCAL',
             },
             { status: 403 }
@@ -138,7 +138,7 @@ export async function POST() {
     if (!appPath) {
         return NextResponse.json(
             {
-                error: 'Crewser is not installed yet. Run Crewser/install.sh first.',
+                error: 'CrewSurf is not installed yet. Run CrewSurf/install.sh first.',
                 code: 'NOT_INSTALLED',
                 installDir: expectedInstallDir(),
             },
@@ -154,7 +154,7 @@ export async function POST() {
     } catch (err) {
         return NextResponse.json(
             {
-                error: err instanceof Error ? err.message : 'Could not launch Crewser.',
+                error: err instanceof Error ? err.message : 'Could not launch CrewSurf.',
                 code: 'LAUNCH_FAILED',
             },
             { status: 500 }
